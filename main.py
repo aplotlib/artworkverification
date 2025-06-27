@@ -1,6 +1,6 @@
 """
-packaging_validator_ai.py - AI-powered packaging and label validator
-Uses Claude and/or OpenAI to intelligently review packaging files
+packaging_validator_fixed.py - Fixed AI-powered packaging and label validator
+Resolves UNKNOWN results issue with better response parsing and error handling
 """
 
 import streamlit as st
@@ -15,6 +15,7 @@ import PyPDF2
 from collections import defaultdict
 import time
 import base64
+import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -113,23 +114,16 @@ def inject_css():
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         
-        .ai-option {
-            background: #f8f9fa;
-            border: 2px solid #e9ecef;
-            border-radius: 8px;
+        .debug-box {
+            background: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
             padding: 1rem;
-            margin: 0.5rem 0;
-            transition: all 0.3s;
-        }
-        
-        .ai-option:hover {
-            border-color: #667eea;
-            box-shadow: 0 2px 8px rgba(102,126,234,0.1);
-        }
-        
-        .ai-option.selected {
-            border-color: #667eea;
-            background: #f3f4ff;
+            margin: 1rem 0;
+            font-family: monospace;
+            font-size: 0.85rem;
+            max-height: 300px;
+            overflow-y: auto;
         }
         
         .validation-result {
@@ -163,25 +157,6 @@ def inject_css():
             color: #0c5460;
         }
         
-        .ai-comparison {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-            margin: 1rem 0;
-        }
-        
-        .ai-result-box {
-            background: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 8px;
-            padding: 1rem;
-        }
-        
-        .ai-result-box h4 {
-            margin: 0 0 1rem 0;
-            color: #495057;
-        }
-        
         .checklist-item {
             padding: 0.5rem;
             margin: 0.25rem 0;
@@ -204,15 +179,6 @@ def inject_css():
         .checklist-warning {
             background: #fff3cd;
             color: #856404;
-        }
-        
-        .cost-indicator {
-            background: #e7f3ff;
-            border: 1px solid #b3d9ff;
-            border-radius: 6px;
-            padding: 0.75rem;
-            margin: 0.5rem 0;
-            font-size: 0.9rem;
         }
         
         .provider-badge {
@@ -331,8 +297,8 @@ FILE INFORMATION:
 - Type: {file_info['type']}
 - Color variant: {file_info['color']}
 
-EXTRACTED TEXT:
-{text[:3000]}...
+EXTRACTED TEXT (first 2000 chars):
+{text[:2000]}
 
 VALIDATION CHECKLIST:
 {json.dumps(checklist_items, indent=2)}
@@ -345,33 +311,109 @@ CRITICAL REQUIREMENTS:
 5. No spelling errors
 6. Product name consistency
 
-Please analyze this file and provide:
+IMPORTANT: You must respond with a valid JSON object with this exact structure:
+{{
+    "overall_assessment": "APPROVED" or "NEEDS_REVISION" or "REVIEW_REQUIRED",
+    "checklist_validation": {{
+        "item_name": {{
+            "status": "PASS" or "FAIL" or "UNSURE",
+            "explanation": "brief explanation"
+        }}
+    }},
+    "critical_issues": ["list of critical issues"],
+    "warnings": ["list of warnings"],
+    "spelling_errors": ["list of spelling errors found"],
+    "consistency_issues": ["list of consistency issues"]
+}}
 
-1. CHECKLIST VALIDATION: For each checklist item, indicate:
-   - ✅ PASS: Item clearly meets requirement
-   - ❌ FAIL: Item fails requirement
-   - ⚠️ UNSURE: Cannot determine from text
-   - Explanation for each item
-
-2. CRITICAL ISSUES: List any critical errors that must be fixed
-
-3. WARNINGS: List any potential issues that should be reviewed
-
-4. SPELLING CHECK: List any spelling errors found
-
-5. CONSISTENCY CHECK: Note any inconsistencies (color, product name, etc.)
-
-6. OVERALL ASSESSMENT: 
-   - APPROVED: Ready for production
-   - NEEDS REVISION: Has issues that must be fixed
-   - REVIEW REQUIRED: Has warnings that need human review
-
-Format your response as structured JSON."""
+Analyze the file and provide your assessment."""
 
     return prompt
 
+def parse_ai_response(response_text, provider):
+    """Parse AI response with multiple fallback methods"""
+    logger.info(f"Parsing {provider} response: {response_text[:200]}...")
+    
+    # Method 1: Try direct JSON parsing
+    try:
+        # Look for JSON in the response
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        if json_match:
+            json_text = json_match.group(0)
+            result = json.loads(json_text)
+            
+            # Normalize keys to lowercase
+            normalized = {}
+            for key, value in result.items():
+                normalized[key.lower().replace('_', '')] = value
+            
+            # Map to expected structure
+            parsed = {
+                'overall_assessment': normalized.get('overallassessment', normalized.get('overall', 'UNKNOWN')),
+                'checklist_validation': normalized.get('checklistvalidation', {}),
+                'critical_issues': normalized.get('criticalissues', []),
+                'warnings': normalized.get('warnings', []),
+                'spelling_errors': normalized.get('spellingerrors', []),
+                'consistency_issues': normalized.get('consistencyissues', [])
+            }
+            
+            logger.info(f"Successfully parsed JSON from {provider}")
+            return parsed
+    except Exception as e:
+        logger.warning(f"JSON parsing failed for {provider}: {e}")
+    
+    # Method 2: Extract key information using patterns
+    try:
+        parsed = {
+            'overall_assessment': 'UNKNOWN',
+            'checklist_validation': {},
+            'critical_issues': [],
+            'warnings': [],
+            'spelling_errors': [],
+            'consistency_issues': []
+        }
+        
+        # Extract overall assessment
+        assessment_match = re.search(r'(APPROVED|NEEDS[_ ]REVISION|REVIEW[_ ]REQUIRED)', response_text, re.IGNORECASE)
+        if assessment_match:
+            parsed['overall_assessment'] = assessment_match.group(1).upper().replace(' ', '_')
+        
+        # Extract critical issues
+        critical_match = re.search(r'critical.*?:(.*?)(?:warnings|spelling|$)', response_text, re.IGNORECASE | re.DOTALL)
+        if critical_match:
+            issues = re.findall(r'[-•]\s*(.+)', critical_match.group(1))
+            parsed['critical_issues'] = [issue.strip() for issue in issues]
+        
+        # Extract warnings
+        warning_match = re.search(r'warnings.*?:(.*?)(?:spelling|consistency|$)', response_text, re.IGNORECASE | re.DOTALL)
+        if warning_match:
+            warnings = re.findall(r'[-•]\s*(.+)', warning_match.group(1))
+            parsed['warnings'] = [warning.strip() for warning in warnings]
+        
+        # Extract checklist items (✅ PASS, ❌ FAIL, ⚠️ UNSURE)
+        checklist_items = re.findall(r'([✅❌⚠️])\s*(.+?):\s*(.+)', response_text)
+        for status_emoji, item, explanation in checklist_items:
+            status = 'PASS' if '✅' in status_emoji else 'FAIL' if '❌' in status_emoji else 'UNSURE'
+            parsed['checklist_validation'][item.strip()] = {
+                'status': status,
+                'explanation': explanation.strip()
+            }
+        
+        logger.info(f"Extracted partial data from {provider} using patterns")
+        return parsed
+        
+    except Exception as e:
+        logger.error(f"Pattern extraction failed for {provider}: {e}")
+    
+    # Method 3: Return minimal structure
+    return {
+        'overall_assessment': 'ERROR',
+        'error': f"Failed to parse {provider} response",
+        'raw_response': response_text[:500]
+    }
+
 def call_claude(prompt, api_key):
-    """Call Claude API"""
+    """Call Claude API with better error handling"""
     if not CLAUDE_AVAILABLE or not api_key:
         return None
     
@@ -380,34 +422,24 @@ def call_claude(prompt, api_key):
         
         response = client.messages.create(
             model="claude-3-haiku-20240307",
-            max_tokens=1500,
+            max_tokens=2000,
             temperature=0.1,
-            system="You are a quality control expert. Respond only with valid JSON.",
+            system="You are a quality control expert. Always respond with valid JSON only, no additional text.",
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Extract JSON from response
         response_text = response.content[0].text
+        logger.info(f"Claude raw response: {response_text[:200]}...")
         
-        # Try to parse JSON
-        try:
-            # Find JSON in response (in case there's extra text)
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                json_text = response_text[json_start:json_end]
-                return json.loads(json_text)
-            else:
-                return {"error": "No JSON found in response", "raw_response": response_text}
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON response", "raw_response": response_text}
+        # Parse the response
+        return parse_ai_response(response_text, 'Claude')
             
     except Exception as e:
         logger.error(f"Claude API error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "overall_assessment": "ERROR"}
 
 def call_openai(prompt, api_key):
-    """Call OpenAI API"""
+    """Call OpenAI API with better error handling"""
     if not OPENAI_AVAILABLE or not api_key:
         return None
     
@@ -417,27 +449,27 @@ def call_openai(prompt, api_key):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a quality control expert. Respond only with valid JSON."},
+                {"role": "system", "content": "You are a quality control expert. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=1500,
-            response_format={"type": "json_object"}
+            max_tokens=2000
         )
         
         response_text = response.choices[0].message.content
+        logger.info(f"OpenAI raw response: {response_text[:200]}...")
         
-        try:
-            return json.loads(response_text)
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON response", "raw_response": response_text}
+        # Parse the response
+        return parse_ai_response(response_text, 'OpenAI')
             
     except Exception as e:
         logger.error(f"OpenAI API error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "overall_assessment": "ERROR"}
 
 def display_ai_results(results, provider):
-    """Display AI validation results"""
+    """Display AI validation results with better error handling"""
+    
+    # Check for errors first
     if "error" in results:
         st.error(f"**{provider} Error:** {results['error']}")
         if "raw_response" in results:
@@ -446,69 +478,115 @@ def display_ai_results(results, provider):
         return
     
     # Overall assessment
-    assessment = results.get('OVERALL_ASSESSMENT', 'UNKNOWN')
+    assessment = results.get('overall_assessment', 'UNKNOWN')
     assessment_color = {
         'APPROVED': 'success',
-        'NEEDS REVISION': 'error',
-        'REVIEW REQUIRED': 'warning'
+        'NEEDS_REVISION': 'error',
+        'REVIEW_REQUIRED': 'warning',
+        'ERROR': 'error',
+        'UNKNOWN': 'info'
     }.get(assessment, 'info')
     
     st.markdown(f'<div class="validation-result {assessment_color}"><strong>Overall Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
     
+    # Debug info in development
+    if st.checkbox(f"Show {provider} debug info", key=f"debug_{provider}"):
+        st.markdown(f'<div class="debug-box">{json.dumps(results, indent=2)}</div>', unsafe_allow_html=True)
+    
     # Checklist validation
-    if 'CHECKLIST_VALIDATION' in results:
+    checklist = results.get('checklist_validation', {})
+    if checklist:
         st.markdown("#### 📋 Checklist Validation")
-        for item, details in results['CHECKLIST_VALIDATION'].items():
+        for item, details in checklist.items():
             if isinstance(details, dict):
-                status = details.get('status', '❓')
+                status = details.get('status', 'UNKNOWN')
                 explanation = details.get('explanation', '')
             else:
-                status = str(details)[:2] if str(details).startswith(('✅', '❌', '⚠️')) else '❓'
+                status = 'UNKNOWN'
                 explanation = str(details)
             
-            status_class = 'checklist-pass' if '✅' in status else 'checklist-fail' if '❌' in status else 'checklist-warning'
-            st.markdown(f'<div class="checklist-item {status_class}">{status} {item}: {explanation}</div>', unsafe_allow_html=True)
+            status_symbol = {'PASS': '✅', 'FAIL': '❌', 'UNSURE': '⚠️'}.get(status, '❓')
+            status_class = {'PASS': 'checklist-pass', 'FAIL': 'checklist-fail', 'UNSURE': 'checklist-warning'}.get(status, 'checklist-warning')
+            
+            st.markdown(f'<div class="checklist-item {status_class}">{status_symbol} {item}: {explanation}</div>', unsafe_allow_html=True)
+    else:
+        st.info("No checklist validation data available")
     
     # Critical issues
-    if 'CRITICAL_ISSUES' in results and results['CRITICAL_ISSUES']:
+    critical = results.get('critical_issues', [])
+    if critical:
         st.markdown("#### 🚨 Critical Issues")
-        for issue in results['CRITICAL_ISSUES']:
+        for issue in critical:
             st.markdown(f'<div class="validation-result error">❌ {issue}</div>', unsafe_allow_html=True)
     
     # Warnings
-    if 'WARNINGS' in results and results['WARNINGS']:
+    warnings = results.get('warnings', [])
+    if warnings:
         st.markdown("#### ⚠️ Warnings")
-        for warning in results['WARNINGS']:
+        for warning in warnings:
             st.markdown(f'<div class="validation-result warning">⚠️ {warning}</div>', unsafe_allow_html=True)
     
     # Spelling errors
-    if 'SPELLING_CHECK' in results and results['SPELLING_CHECK']:
+    spelling = results.get('spelling_errors', [])
+    if spelling:
         st.markdown("#### 📝 Spelling Errors")
-        for error in results['SPELLING_CHECK']:
-            if isinstance(error, dict):
-                st.markdown(f"- **{error.get('word', '')}** → {error.get('correction', '')}")
-            else:
-                st.markdown(f"- {error}")
+        for error in spelling:
+            st.markdown(f"- {error}")
     
-    # Consistency check
-    if 'CONSISTENCY_CHECK' in results and results['CONSISTENCY_CHECK']:
+    # Consistency issues
+    consistency = results.get('consistency_issues', [])
+    if consistency:
         st.markdown("#### 🔄 Consistency Issues")
-        for issue in results['CONSISTENCY_CHECK']:
+        for issue in consistency:
             st.markdown(f"- {issue}")
 
-def estimate_cost(num_files, providers):
-    """Estimate API costs"""
-    # Rough estimates per file
-    costs = {
-        'claude': 0.001,  # Claude Haiku is very cheap
-        'openai': 0.003,  # GPT-4 mini
-        'both': 0.004
-    }
+def test_ai_connection(api_keys):
+    """Test AI connections with a simple prompt"""
+    st.markdown("### 🧪 Testing AI Connections...")
     
-    if 'both' in providers:
-        return num_files * costs['both']
-    else:
-        return num_files * sum(costs.get(p, 0) for p in providers)
+    test_prompt = """Respond with this exact JSON:
+{
+    "overall_assessment": "APPROVED",
+    "test": "success"
+}"""
+    
+    results = {}
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if 'claude' in api_keys:
+            with st.spinner("Testing Claude..."):
+                try:
+                    client = anthropic.Anthropic(api_key=api_keys['claude'])
+                    response = client.messages.create(
+                        model="claude-3-haiku-20240307",
+                        max_tokens=100,
+                        messages=[{"role": "user", "content": test_prompt}]
+                    )
+                    st.success("✅ Claude connected!")
+                    results['claude'] = True
+                except Exception as e:
+                    st.error(f"❌ Claude failed: {str(e)[:100]}")
+                    results['claude'] = False
+    
+    with col2:
+        if 'openai' in api_keys:
+            with st.spinner("Testing OpenAI..."):
+                try:
+                    client = openai.OpenAI(api_key=api_keys['openai'])
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": test_prompt}],
+                        max_tokens=100
+                    )
+                    st.success("✅ OpenAI connected!")
+                    results['openai'] = True
+                except Exception as e:
+                    st.error(f"❌ OpenAI failed: {str(e)[:100]}")
+                    results['openai'] = False
+    
+    return results
 
 def main():
     inject_css()
@@ -560,6 +638,12 @@ def main():
         
         st.markdown("---")
         
+        # Test connections button
+        if st.button("🧪 Test AI Connections"):
+            test_ai_connection(api_keys)
+        
+        st.markdown("---")
+        
         # Checklist reference
         st.markdown("### 📋 Validation Checklist")
         for category, items in VALIDATION_CHECKLIST.items():
@@ -568,6 +652,10 @@ def main():
                     st.markdown(f"• {item}")
     
     # Main content
+    if not available_providers:
+        st.warning("⚠️ Please configure at least one AI provider to use this tool.")
+        return
+    
     st.markdown("### 🤖 Select AI Provider(s)")
     
     col1, col2, col3 = st.columns(3)
@@ -607,10 +695,6 @@ def main():
     )
     
     if uploaded_files and providers:
-        # Cost estimate
-        estimated_cost = estimate_cost(len(uploaded_files), providers)
-        st.markdown(f'<div class="cost-indicator">💰 Estimated cost: ~${estimated_cost:.3f} USD</div>', unsafe_allow_html=True)
-        
         # Validate button
         if st.button("🚀 Start AI Validation", type="primary", use_container_width=True):
             results = {}
@@ -634,7 +718,7 @@ def main():
                 # Determine checklist items based on file type
                 checklist_items = []
                 for category, items in VALIDATION_CHECKLIST.items():
-                    if file_info['type'] in category.lower() or 'all' in category.lower():
+                    if file_info['type'] in category.lower() or not file_info['type']:
                         checklist_items.extend(items)
                 
                 if not checklist_items:
@@ -723,83 +807,6 @@ def main():
                 file_name=f"ai_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 mime="application/json"
             )
-        
-        with col2:
-            # Summary export
-            summary = generate_summary_report(st.session_state.validation_results)
-            
-            st.download_button(
-                label="📥 Download Summary Report",
-                data=summary,
-                file_name=f"validation_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain"
-            )
-    
-    else:
-        # Instructions
-        st.info("""
-        ### 🚀 How to Use AI Validation
-        
-        1. **Select AI Provider(s)**: Choose Claude, OpenAI, or both for comparison
-        2. **Upload Files**: Add your packaging PDFs and text files
-        3. **Review Results**: AI will check against the full validation checklist
-        4. **Export Reports**: Download detailed validation results
-        
-        **What AI Checks:**
-        - ✅ Complete checklist validation
-        - ✅ Spelling and grammar
-        - ✅ Origin marking (Made in China)
-        - ✅ Color consistency
-        - ✅ SKU format validation
-        - ✅ Brand presence
-        - ✅ Overall quality assessment
-        
-        **Benefits of AI Review:**
-        - 🎯 More thorough than pattern matching
-        - 🔍 Catches subtle issues
-        - 💡 Provides specific recommendations
-        - ⚡ Fast and consistent
-        """)
-
-def generate_summary_report(results):
-    """Generate a text summary of all results"""
-    summary = f"""AI PACKAGING VALIDATION REPORT
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Providers Used: {', '.join(st.session_state.ai_providers)}
-
-SUMMARY
-=======
-Files Validated: {len(results)}
-
-DETAILED RESULTS
-===============
-
-"""
-    
-    for filename, file_results in results.items():
-        summary += f"\n{filename}\n" + "-" * len(filename) + "\n"
-        summary += f"Type: {file_results['file_info']['type']}\n"
-        summary += f"Color: {file_results['file_info']['color']}\n"
-        
-        for provider in ['claude', 'openai']:
-            if provider in file_results:
-                result = file_results[provider]
-                if 'OVERALL_ASSESSMENT' in result:
-                    summary += f"\n{provider.upper()} Assessment: {result['OVERALL_ASSESSMENT']}\n"
-                    
-                    if 'CRITICAL_ISSUES' in result and result['CRITICAL_ISSUES']:
-                        summary += "Critical Issues:\n"
-                        for issue in result['CRITICAL_ISSUES']:
-                            summary += f"  - {issue}\n"
-                    
-                    if 'WARNINGS' in result and result['WARNINGS']:
-                        summary += "Warnings:\n"
-                        for warning in result['WARNINGS']:
-                            summary += f"  - {warning}\n"
-        
-        summary += "\n" + "="*50 + "\n"
-    
-    return summary
 
 if __name__ == "__main__":
     main()
