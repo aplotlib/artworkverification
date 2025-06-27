@@ -18,6 +18,13 @@ import base64
 import io
 import uuid
 
+# Try to import chardet for encoding detection
+try:
+    import chardet
+    CHARDET_AVAILABLE = True
+except ImportError:
+    CHARDET_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,6 +50,21 @@ try:
 except ImportError:
     CLAUDE_AVAILABLE = False
     logger.warning("Anthropic not available")
+
+# Try to import PDF libraries
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+    logger.warning("pdfplumber not available")
+
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    logger.warning("PyMuPDF not available")
 
 # Validation checklist from the document
 VALIDATION_CHECKLIST = {
@@ -231,29 +253,99 @@ def get_api_keys():
     return {k: v for k, v in keys.items() if v}
 
 def extract_text_from_pdf(file_bytes):
-    """Extract text from PDF"""
+    """Extract text from PDF using multiple methods"""
+    extracted_text = ""
+    method_used = ""
+    
+    # Method 1: Try pdfplumber first (best for complex layouts)
+    if PDFPLUMBER_AVAILABLE:
+        try:
+            import pdfplumber
+            with pdfplumber.open(file_bytes) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        extracted_text += page_text + "\n"
+            
+            if extracted_text.strip():
+                method_used = "pdfplumber"
+                logger.info(f"Successfully extracted text using pdfplumber: {len(extracted_text)} chars")
+        except Exception as e:
+            logger.warning(f"pdfplumber extraction failed: {e}")
+    
+    # Method 2: Try PyMuPDF if pdfplumber didn't work
+    if not extracted_text.strip() and PYMUPDF_AVAILABLE:
+        try:
+            import fitz
+            pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
+            file_bytes.seek(0)  # Reset stream position
+            
+            for page_num in range(len(pdf_document)):
+                page = pdf_document[page_num]
+                page_text = page.get_text()
+                if page_text:
+                    extracted_text += page_text + "\n"
+            
+            pdf_document.close()
+            
+            if extracted_text.strip():
+                method_used = "PyMuPDF"
+                logger.info(f"Successfully extracted text using PyMuPDF: {len(extracted_text)} chars")
+        except Exception as e:
+            logger.warning(f"PyMuPDF extraction failed: {e}")
+    
+    # Method 3: Fall back to PyPDF2
+    if not extracted_text.strip():
+        try:
+            pdf_reader = PyPDF2.PdfReader(file_bytes)
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                page_text = page.extract_text()
+                
+                if page_text:
+                    extracted_text += page_text + "\n"
+            
+            if extracted_text.strip():
+                method_used = "PyPDF2"
+                logger.info(f"Successfully extracted text using PyPDF2: {len(extracted_text)} chars")
+        except Exception as e:
+            logger.error(f"PyPDF2 extraction failed: {e}")
+    
+    # Clean up extracted text
+    if extracted_text.strip():
+        # Remove excessive whitespace
+        extracted_text = re.sub(r'\s+', ' ', extracted_text)
+        # Remove zero-width characters
+        extracted_text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', extracted_text)
+        # Remove excessive newlines
+        extracted_text = re.sub(r'\n+', '\n', extracted_text)
+        
+        logger.info(f"Text extracted using {method_used}: {len(extracted_text)} chars")
+        return extracted_text.strip()
+    
+    # If no text was extracted, check if it's an image-based PDF
     try:
         pdf_reader = PyPDF2.PdfReader(file_bytes)
-        text = ""
+        num_pages = len(pdf_reader.pages)
         
-        for page_num in range(len(pdf_reader.pages)):
-            page = pdf_reader.pages[page_num]
-            page_text = page.extract_text()
-            
-            if page_text:
-                # Clean up text
-                page_text = re.sub(r'\s+', ' ', page_text)
-                page_text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', page_text)
-                text += page_text + "\n"
+        # Check if PDF has images
+        has_images = False
+        for page in pdf_reader.pages:
+            if '/XObject' in page.get('/Resources', {}):
+                xobject = page['/Resources']['/XObject'].get_object()
+                for obj in xobject:
+                    if xobject[obj]['/Subtype'] == '/Image':
+                        has_images = True
+                        break
         
-        # If no text was extracted, return a message
-        if not text.strip():
-            return "[No text could be extracted from PDF - file may be scanned or image-based]"
+        if has_images:
+            return "[Image-based PDF detected - text extraction not possible. Please use text-based PDFs or enable OCR]"
+        else:
+            return f"[No text could be extracted from PDF - {num_pages} pages found but no readable content]"
             
-        return text.strip()
     except Exception as e:
-        logger.error(f"PDF extraction error: {e}")
-        return f"[Error extracting PDF: {str(e)}]"
+        logger.error(f"PDF analysis error: {e}")
+        return f"[Error analyzing PDF: {str(e)}]"
 
 def extract_file_info(filename):
     """Extract product and variant info from filename"""
@@ -294,6 +386,10 @@ def extract_file_info(filename):
 
 def create_ai_prompt(text, filename, file_info, checklist_items):
     """Create comprehensive prompt for AI validation"""
+    # Don't send image-based PDF error messages to AI
+    if text.startswith("[") and text.endswith("]"):
+        return None
+        
     prompt = f"""You are a quality control expert reviewing packaging and label files for Vive Health medical devices.
 
 FILE INFORMATION:
@@ -622,8 +718,13 @@ def generate_summary_report(results):
     approved = 0
     needs_revision = 0
     review_required = 0
+    extraction_failed = 0
     
     for filename, file_results in results.items():
+        if file_results.get('extraction_failed', False):
+            extraction_failed += 1
+            continue
+            
         for provider in ['claude', 'openai']:
             if provider in file_results and isinstance(file_results[provider], dict):
                 assessment = file_results[provider].get('overall_assessment', 'UNKNOWN')
@@ -639,6 +740,7 @@ def generate_summary_report(results):
     report.append(f"Approved: {approved}")
     report.append(f"Needs Revision: {needs_revision}")
     report.append(f"Review Required: {review_required}")
+    report.append(f"Extraction Failed: {extraction_failed}")
     report.append("")
     report.append("=" * 60)
     report.append("")
@@ -647,6 +749,12 @@ def generate_summary_report(results):
     for filename, file_results in results.items():
         report.append(f"FILE: {filename}")
         report.append("-" * 40)
+        
+        if file_results.get('extraction_failed', False):
+            report.append(f"STATUS: Text extraction failed")
+            report.append(f"REASON: {file_results.get('skip_reason', 'Unknown')}")
+            report.append("")
+            continue
         
         for provider in ['claude', 'openai']:
             if provider in file_results and isinstance(file_results[provider], dict):
@@ -780,6 +888,36 @@ def main():
         
         st.markdown("---")
         
+        # PDF Libraries status
+        st.markdown("### 📄 PDF Libraries")
+        
+        if PDFPLUMBER_AVAILABLE:
+            st.success("✅ pdfplumber (best)")
+        else:
+            st.warning("⚠️ pdfplumber not installed")
+        
+        if PYMUPDF_AVAILABLE:
+            st.success("✅ PyMuPDF (good)")
+        else:
+            st.warning("⚠️ PyMuPDF not installed")
+        
+        st.success("✅ PyPDF2 (fallback)")
+        
+        with st.expander("PDF Tips"):
+            st.markdown("""
+            **For best results:**
+            - Use text-based PDFs (not scanned)
+            - Export from source with text layers
+            - Avoid image-only PDFs
+            
+            **If extraction fails:**
+            - Re-export the PDF
+            - Use Adobe Acrobat's OCR
+            - Try online PDF-to-text tools
+            """)
+        
+        st.markdown("---")
+        
         # Test connections button
         if st.button("🧪 Test AI Connections"):
             test_ai_connection(api_keys)
@@ -856,48 +994,74 @@ def main():
                 if file.type == 'application/pdf':
                     text = extract_text_from_pdf(file)
                 else:
-                    text = file.read().decode('utf-8', errors='ignore')
+                    # For text files, try to detect encoding
+                    file_bytes = file.read()
+                    
+                    if CHARDET_AVAILABLE:
+                        # Detect encoding
+                        result = chardet.detect(file_bytes)
+                        encoding = result['encoding'] or 'utf-8'
+                        try:
+                            text = file_bytes.decode(encoding)
+                        except:
+                            text = file_bytes.decode('utf-8', errors='ignore')
+                    else:
+                        text = file_bytes.decode('utf-8', errors='ignore')
                 
                 # Check if text extraction was successful
+                skip_ai_analysis = False
                 if not text or len(text) < 10:
-                    st.warning(f"⚠️ Limited text extracted from {file.name}. Results may be incomplete.")
-                elif "[Error extracting PDF" in text or "[No text could be extracted" in text:
-                    st.error(f"❌ Could not extract text from {file.name}. File may be image-based or corrupted.")
+                    st.warning(f"⚠️ No text extracted from {file.name}. File may be empty.")
+                    skip_ai_analysis = True
+                elif "[Image-based PDF detected" in text:
+                    st.error(f"🖼️ {file.name} appears to be an image-based PDF. Text extraction requires OCR capability.")
+                    skip_ai_analysis = True
+                elif "[Error" in text or "[No text could be extracted" in text:
+                    st.error(f"❌ Could not extract text from {file.name}. {text}")
+                    skip_ai_analysis = True
                 
                 # Get file info
                 file_info = extract_file_info(file.name)
                 
-                # Determine checklist items based on file type
-                checklist_items = []
-                for category, items in VALIDATION_CHECKLIST.items():
-                    if file_info['type'] in category.lower() or not file_info['type']:
-                        checklist_items.extend(items)
-                
-                if not checklist_items:
-                    checklist_items = VALIDATION_CHECKLIST.get("Packaging Artwork", [])
-                
-                # Create prompt
-                prompt = create_ai_prompt(text, file.name, file_info, checklist_items)
-                
-                # Call selected AI providers
+                # Store basic file results
                 file_results = {
                     'file_info': file_info,
-                    'text_length': len(text),
-                    'text_preview': text[:500] + '...' if len(text) > 500 else text,
-                    'validation_id': validation_id
+                    'text_length': len(text) if not skip_ai_analysis else 0,
+                    'text_preview': text[:500] + '...' if len(text) > 500 and not skip_ai_analysis else text,
+                    'validation_id': validation_id,
+                    'extraction_failed': skip_ai_analysis
                 }
                 
-                if 'claude' in providers and 'claude' in api_keys:
-                    with st.spinner(f"🤖 Claude reviewing {file.name}..."):
-                        claude_result = call_claude(prompt, api_keys['claude'])
-                        file_results['claude'] = claude_result
-                        time.sleep(0.5)  # Rate limiting
-                
-                if 'openai' in providers and 'openai' in api_keys:
-                    with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
-                        openai_result = call_openai(prompt, api_keys['openai'])
-                        file_results['openai'] = openai_result
-                        time.sleep(0.5)  # Rate limiting
+                # Only proceed with AI analysis if text was successfully extracted
+                if not skip_ai_analysis:
+                    # Determine checklist items based on file type
+                    checklist_items = []
+                    for category, items in VALIDATION_CHECKLIST.items():
+                        if file_info['type'] in category.lower() or not file_info['type']:
+                            checklist_items.extend(items)
+                    
+                    if not checklist_items:
+                        checklist_items = VALIDATION_CHECKLIST.get("Packaging Artwork", [])
+                    
+                    # Create prompt
+                    prompt = create_ai_prompt(text, file.name, file_info, checklist_items)
+                    
+                    # Call selected AI providers
+                    if 'claude' in providers and 'claude' in api_keys:
+                        with st.spinner(f"🤖 Claude reviewing {file.name}..."):
+                            claude_result = call_claude(prompt, api_keys['claude'])
+                            file_results['claude'] = claude_result
+                            time.sleep(0.5)  # Rate limiting
+                    
+                    if 'openai' in providers and 'openai' in api_keys:
+                        with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
+                            openai_result = call_openai(prompt, api_keys['openai'])
+                            file_results['openai'] = openai_result
+                            time.sleep(0.5)  # Rate limiting
+                else:
+                    # Add placeholder results for failed extractions
+                    file_results['analysis_skipped'] = True
+                    file_results['skip_reason'] = text
                 
                 results[file.name] = file_results
                 progress_bar.progress((idx + 1) / len(uploaded_files))
@@ -923,6 +1087,23 @@ def main():
                 # File info
                 file_info = file_results['file_info']
                 validation_id = file_results.get('validation_id', 0)
+                
+                # Check if text extraction failed
+                if file_results.get('extraction_failed', False):
+                    st.error(f"**Text Extraction Failed**")
+                    st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']}")
+                    st.info(f"**Reason:** {file_results.get('skip_reason', 'Unknown error')}")
+                    
+                    # Provide helpful suggestions
+                    st.markdown("### 💡 Suggestions:")
+                    st.markdown("""
+                    - Ensure the PDF contains actual text (not just images)
+                    - Try re-exporting the PDF with text layers
+                    - For scanned documents, use OCR software first
+                    - Save as a text-based PDF from the source application
+                    """)
+                    continue
+                
                 st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']} | **Text extracted:** {file_results['text_length']} chars")
                 
                 # Show results based on providers used
