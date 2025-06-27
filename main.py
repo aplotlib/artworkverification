@@ -1,6 +1,6 @@
 """
-packaging_validator_enhanced.py - Enhanced AI-powered packaging and label validator
-Optimized for Vive Health wheelchair bag and medical device packaging validation
+Advanced Packaging Validation System for Vive Health
+Multi-product support with cross-file validation and AI chat interface
 """
 
 import streamlit as st
@@ -9,34 +9,29 @@ import re
 from datetime import datetime
 import logging
 import os
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set
 import json
 import PyPDF2
 from collections import defaultdict
 import time
 import base64
 import io
-import uuid
+from difflib import SequenceMatcher
+import hashlib
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARNING,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Suppress debug messages
-logging.getLogger('PyPDF2').setLevel(logging.WARNING)
-logging.getLogger('pdfplumber').setLevel(logging.WARNING)
-logging.getLogger('PIL').setLevel(logging.WARNING)
 
 # Page config
 st.set_page_config(
-    page_title="Vive Health Packaging Validator",
+    page_title="Vive Health Advanced Packaging Validator",
     page_icon="🏥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # Try to import AI libraries
@@ -60,221 +55,235 @@ try:
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
-    logger.warning("pdfplumber not available")
 
 try:
     import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    logger.warning("PyMuPDF not available")
 
-# Vive Health specific validation rules
-VIVE_PRODUCTS = {
+# Global product database - expandable for all products
+VIVE_PRODUCT_DATABASE = {
     "wheelchair_bag": {
-        "variants": ["BLACK", "PURPLE FLORAL"],
-        "sku_prefix": "LVA3100",
-        "required_text": ["Vive", "Wheelchair Bag Advanced", "Made in China"],
-        "materials": ["60% Polyester", "20% PVC", "20% LDPE"],
-        "care_instructions": ["Machine wash", "Wash cold", "Air dry", "Do not tumble dry"]
+        "name": "Wheelchair Bag Advanced",
+        "sku_pattern": r"LVA3100[A-Z]{3}",
+        "variants": {
+            "BLACK": {"sku": "LVA3100BLK", "color_codes": ["black", "blk"]},
+            "PURPLE FLORAL": {"sku": "LVA3100PUR", "color_codes": ["purple", "floral", "pur"]}
+        },
+        "materials": "60% Polyester, 20% PVC, 20% LDPE",
+        "temp_range": "65°F to 85°F",
+        "warranty": "1 year"
+    },
+    "alternating_pressure_mattress": {
+        "name": "Alternating Air Pressure Mattress Pad",
+        "sku_pattern": r"LVA1004[A-Z\-]*",
+        "variants": {
+            "STANDARD": {"sku": "LVA1004-UPC", "asin": "B00TZ73MUY"}
+        }
+    },
+    "knee_scooter": {
+        "name": "Knee Scooter",
+        "sku_pattern": r"LVA1000[A-Z]{3}",
+        "variants": {
+            "BLACK": {"sku": "LVA1000BLK"},
+            "BLUE": {"sku": "LVA1000BLU"},
+            "RED": {"sku": "LVA1000RED"}
+        }
+    },
+    "rollator": {
+        "name": "Rollator Walker",
+        "sku_pattern": r"LVA2000[A-Z]{3}",
+        "variants": {
+            "BLACK": {"sku": "LVA2000BLK"},
+            "BLUE": {"sku": "LVA2000BLU"}
+        }
     }
 }
 
-# Enhanced validation checklist for Vive Health products
-VIVE_VALIDATION_CHECKLIST = {
-    "Packaging Artwork": [
-        "Vive brand logo is present and correct",
-        "Product name matches SKU (Wheelchair Bag Advanced)",
-        "Color variant matches filename and content",
-        "Made in China is clearly displayed",
-        "Barcode/UPC is present and readable",
-        "SKU format is correct (LVA3100XX for wheelchair bag)",
-        "Website URL is vivehealth.com",
-        "Social media handles are correct",
-        "California Proposition 65 warning if required",
-        "Distributed by information is present"
+# Universal validation rules
+UNIVERSAL_REQUIREMENTS = {
+    "mandatory": [
+        "Made in China",
+        "vive® OR Vive Health",
+        "vivehealth.com OR support website",
+        "Contact information (phone/email)"
     ],
-    "Wash Tag/Care Label": [
-        "Material composition is correct (60% Polyester, 20% PVC, 20% LDPE)",
-        "Made in China is present",
-        "Care instructions are complete and correct",
-        "Temperature range specified (65°F to 85°F)",
-        "All required care symbols are present"
-    ],
-    "Quick Start Guide": [
-        "Vive logo is present",
-        "Product name is consistent",
-        "SKU (LVA3100) is displayed",
-        "Website URL is correct (vhealth.link/fxv)",
-        "Application instructions are clear",
-        "Care instructions match wash tag",
-        "Warranty information is included",
-        "Contact information is accurate"
-    ]
-}
-
-# Manual validation templates
-MANUAL_TEMPLATES = {
-    "packaging": {
-        "title": "Packaging Artwork Manual Check",
-        "fields": [
-            {"name": "vive_logo", "label": "Vive Logo Present", "type": "checkbox"},
-            {"name": "product_name", "label": "Product Name", "type": "text", "default": "Wheelchair Bag Advanced"},
-            {"name": "color_variant", "label": "Color Variant", "type": "select", "options": ["BLACK", "PURPLE FLORAL"]},
-            {"name": "sku", "label": "SKU Number", "type": "text", "placeholder": "LVA3100XXX"},
-            {"name": "made_in_china", "label": "Made in China Text", "type": "checkbox"},
-            {"name": "website_url", "label": "Website URL", "type": "text", "default": "vivehealth.com"},
-            {"name": "barcode_present", "label": "Barcode/UPC Present", "type": "checkbox"},
-            {"name": "ca_warning", "label": "CA Prop 65 Warning", "type": "checkbox"},
-            {"name": "notes", "label": "Additional Notes", "type": "textarea"}
-        ]
-    },
-    "washtag": {
-        "title": "Wash Tag/Care Label Manual Check",
-        "fields": [
-            {"name": "materials", "label": "Material Composition", "type": "text", "default": "60% Polyester, 20% PVC, 20% LDPE"},
-            {"name": "made_in_china", "label": "Made in China Text", "type": "checkbox"},
-            {"name": "machine_wash", "label": "Machine Wash Instructions", "type": "checkbox"},
-            {"name": "temp_range", "label": "Temperature Range", "type": "text", "default": "65°F to 85°F"},
-            {"name": "care_symbols", "label": "Care Symbols Present", "type": "checkbox"},
-            {"name": "notes", "label": "Additional Notes", "type": "textarea"}
-        ]
-    },
-    "quickstart": {
-        "title": "Quick Start Guide Manual Check",
-        "fields": [
-            {"name": "vive_logo", "label": "Vive Logo Present", "type": "checkbox"},
-            {"name": "product_name", "label": "Product Name Consistent", "type": "checkbox"},
-            {"name": "sku_displayed", "label": "SKU Displayed", "type": "text", "placeholder": "LVA3100"},
-            {"name": "website", "label": "Website URL", "type": "text", "default": "vhealth.link/fxv"},
-            {"name": "instructions", "label": "Application Instructions Clear", "type": "checkbox"},
-            {"name": "warranty", "label": "Warranty Information", "type": "checkbox"},
-            {"name": "contact_info", "label": "Contact Information", "type": "checkbox"},
-            {"name": "notes", "label": "Additional Notes", "type": "textarea"}
-        ]
+    "product_specific": {
+        "packaging": ["Barcode/UPC", "SKU visible", "Product name", "Color identifier"],
+        "washtag": ["Material composition", "Care instructions", "Temperature range"],
+        "quickstart": ["Setup instructions", "Website/QR code", "Warranty info"],
+        "manual": ["Safety warnings", "Product specifications", "Support contact"]
     }
 }
 
-def inject_css():
-    """Inject enhanced CSS styling for Vive Health branding"""
+def inject_advanced_css():
+    """Enhanced CSS for professional UI"""
     st.markdown("""
     <style>
+        /* Main theme */
+        .stApp {
+            background-color: #f5f7fa;
+        }
+        
         .main-header {
-            background: linear-gradient(135deg, #55c4cf 0%, #3ba0a8 100%);
-            padding: 2.5rem;
-            border-radius: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 2rem;
+            border-radius: 15px;
             color: white;
             text-align: center;
             margin-bottom: 2rem;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        
-        .vive-logo {
-            font-size: 2.5rem;
-            font-weight: bold;
-            margin-bottom: 0.5rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
         }
         
         .product-card {
-            background: #f8f9fa;
-            border: 2px solid #55c4cf;
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-left: 4px solid #667eea;
+        }
+        
+        .validation-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .validation-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .cross-check-alert {
+            background: #fff5f5;
+            border: 2px solid #feb2b2;
             border-radius: 8px;
             padding: 1rem;
             margin: 0.5rem 0;
         }
         
-        .validation-result {
-            padding: 1.5rem;
-            border-radius: 8px;
-            margin: 1rem 0;
-            border-left: 4px solid;
-        }
-        
-        .error { 
-            background: #fee; 
-            border-color: #f44336;
-            color: #c62828;
-        }
-        
-        .warning { 
-            background: #fff3cd; 
-            border-color: #ffc107;
-            color: #856404;
-        }
-        
-        .success { 
-            background: #d4edda; 
-            border-color: #28a745;
-            color: #155724;
-        }
-        
-        .info {
-            background: #d1ecf1;
-            border-color: #17a2b8;
-            color: #0c5460;
-        }
-        
-        .checklist-item {
-            padding: 0.5rem;
-            margin: 0.25rem 0;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .checklist-pass {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .checklist-fail {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .checklist-warning {
-            background: #fff3cd;
-            color: #856404;
-        }
-        
-        .manual-input-box {
-            background: #f0f8ff;
-            border: 2px solid #4682b4;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin: 1rem 0;
-        }
-        
-        .pdf-status {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
-            border-radius: 4px;
+        .chat-message {
             padding: 1rem;
+            border-radius: 10px;
+            margin: 0.5rem 0;
+        }
+        
+        .user-message {
+            background: #e6f2ff;
+            margin-left: 2rem;
+        }
+        
+        .ai-message {
+            background: #f0f4f8;
+            margin-right: 2rem;
+        }
+        
+        .metric-card {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        
+        .status-pass { 
+            background: #c6f6d5; 
+            color: #276749; 
+        }
+        
+        .status-fail { 
+            background: #fed7d7; 
+            color: #9b2c2c; 
+        }
+        
+        .status-warning { 
+            background: #fefcbf; 
+            color: #975a16; 
+        }
+        
+        .insights-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px;
+            padding: 1.5rem;
             margin: 1rem 0;
-            color: #856404;
+        }
+        
+        .file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .file-card {
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .file-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+        }
+        
+        .progress-tracker {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .inconsistency-alert {
+            background: #fffaf0;
+            border: 2px solid #feb2b2;
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 0.5rem 0;
         }
     </style>
     """, unsafe_allow_html=True)
 
 def get_api_keys():
-    """Get API keys from secrets or environment"""
+    """Get API keys from various sources"""
     keys = {}
     
-    try:
-        if hasattr(st, 'secrets'):
-            for key_name in ['OPENAI_API_KEY', 'openai_api_key', 'openai']:
-                if key_name in st.secrets:
-                    keys['openai'] = st.secrets[key_name]
-                    break
-            
-            for key_name in ['ANTHROPIC_API_KEY', 'anthropic_api_key', 'claude_api_key']:
-                if key_name in st.secrets:
-                    keys['claude'] = st.secrets[key_name]
-                    break
-    except:
-        pass
+    # Check streamlit secrets
+    if hasattr(st, 'secrets'):
+        for key_name in ['OPENAI_API_KEY', 'openai_api_key', 'openai']:
+            if key_name in st.secrets:
+                keys['openai'] = st.secrets[key_name]
+                break
+        
+        for key_name in ['ANTHROPIC_API_KEY', 'anthropic_api_key', 'claude_api_key']:
+            if key_name in st.secrets:
+                keys['claude'] = st.secrets[key_name]
+                break
     
+    # Check environment variables
     if 'openai' not in keys:
         keys['openai'] = os.getenv('OPENAI_API_KEY')
     if 'claude' not in keys:
@@ -282,854 +291,957 @@ def get_api_keys():
     
     return {k: v for k, v in keys.items() if v}
 
-def detect_vive_product_type(filename, text=""):
-    """Detect specific Vive Health product type from filename and content"""
-    product_info = {
-        'product': 'unknown',
-        'variant': '',
-        'color': '',
-        'type': '',
-        'sku_detected': ''
-    }
+class ProductDetector:
+    """Advanced product detection from filenames and content"""
     
-    name_lower = filename.lower()
-    text_lower = text.lower() if text else ""
-    
-    # Detect wheelchair bag
-    if 'wheelchair' in name_lower or 'lva3100' in text_lower:
-        product_info['product'] = 'wheelchair_bag'
+    @staticmethod
+    def detect_product(filename: str, text_content: str = "") -> Dict[str, Any]:
+        """Detect product type and variant from filename and content"""
+        result = {
+            'product_type': None,
+            'product_name': None,
+            'variant': None,
+            'color': None,
+            'sku': None,
+            'file_type': None,
+            'confidence': 0
+        }
         
-        # Detect color variant
-        if 'black' in name_lower or 'black' in text_lower:
-            product_info['color'] = 'BLACK'
-            product_info['variant'] = 'BLACK'
-            product_info['sku_detected'] = 'LVA3100BLK'
-        elif 'purple' in name_lower or 'floral' in name_lower or 'purple floral' in text_lower:
-            product_info['color'] = 'PURPLE FLORAL'
-            product_info['variant'] = 'PURPLE FLORAL'
-            product_info['sku_detected'] = 'LVA3100PUR'
-    
-    # Detect file type
-    if 'packaging' in name_lower or 'package' in name_lower:
-        product_info['type'] = 'packaging'
-    elif 'wash' in name_lower or 'tag' in name_lower or 'label' in name_lower:
-        product_info['type'] = 'washtag'
-    elif 'quick' in name_lower or 'guide' in name_lower or 'manual' in name_lower:
-        product_info['type'] = 'quickstart'
-    elif 'qc' in name_lower:
-        product_info['type'] = 'qc_sheet'
-    
-    return product_info
+        filename_lower = filename.lower()
+        text_lower = text_content.lower() if text_content else ""
+        
+        # Detect product type
+        for product_key, product_info in VIVE_PRODUCT_DATABASE.items():
+            product_name_parts = product_info['name'].lower().split()
+            
+            # Check filename
+            if any(part in filename_lower for part in product_name_parts[:2]):
+                result['product_type'] = product_key
+                result['product_name'] = product_info['name']
+                result['confidence'] += 50
+            
+            # Check SKU pattern in text
+            if text_content and re.search(product_info['sku_pattern'], text_content):
+                result['product_type'] = product_key
+                result['product_name'] = product_info['name']
+                result['confidence'] += 30
+                
+                # Extract actual SKU
+                sku_match = re.search(product_info['sku_pattern'], text_content)
+                if sku_match:
+                    result['sku'] = sku_match.group(0)
+        
+        # Detect variant/color
+        if result['product_type'] and 'variants' in VIVE_PRODUCT_DATABASE[result['product_type']]:
+            variants = VIVE_PRODUCT_DATABASE[result['product_type']]['variants']
+            
+            for variant_name, variant_info in variants.items():
+                # Check color codes
+                if 'color_codes' in variant_info:
+                    for code in variant_info['color_codes']:
+                        if code in filename_lower or code in text_lower:
+                            result['variant'] = variant_name
+                            result['color'] = variant_name
+                            result['confidence'] += 20
+                            break
+        
+        # Detect file type
+        file_types = {
+            'packaging': ['packaging', 'package', 'box', 'artwork'],
+            'washtag': ['wash', 'tag', 'care', 'label'],
+            'quickstart': ['quick', 'start', 'guide', 'qsg'],
+            'manual': ['manual', 'instruction', 'user'],
+            'shipping': ['shipping', 'ship', 'mark'],
+            'qc': ['qc', 'quality', 'check']
+        }
+        
+        for file_type, keywords in file_types.items():
+            if any(keyword in filename_lower for keyword in keywords):
+                result['file_type'] = file_type
+                break
+        
+        return result
 
-def extract_text_from_pdf_simple(file_bytes, filename=""):
-    """Simple PDF text extraction with basic fallback"""
+class CrossFileValidator:
+    """Validates consistency across multiple files"""
+    
+    def __init__(self):
+        self.inconsistencies = []
+        self.product_groups = defaultdict(list)
+        self.variant_groups = defaultdict(list)
+    
+    def add_file(self, filename: str, product_info: Dict, extracted_text: str):
+        """Add a file to cross-validation groups"""
+        product_type = product_info.get('product_type')
+        variant = product_info.get('variant')
+        
+        if product_type:
+            self.product_groups[product_type].append({
+                'filename': filename,
+                'info': product_info,
+                'text': extracted_text
+            })
+        
+        if variant:
+            key = f"{product_type}_{variant}"
+            self.variant_groups[key].append({
+                'filename': filename,
+                'info': product_info,
+                'text': extracted_text
+            })
+    
+    def validate_consistency(self) -> List[Dict]:
+        """Check for inconsistencies across files"""
+        inconsistencies = []
+        
+        # Check within product groups
+        for product_type, files in self.product_groups.items():
+            if len(files) > 1:
+                # Check for consistent product naming
+                product_names = [f['text'].lower() for f in files if f['text']]
+                
+                # Extract key information
+                for i, file1 in enumerate(files):
+                    for file2 in files[i+1:]:
+                        # Check SKU consistency
+                        if file1['info'].get('sku') and file2['info'].get('sku'):
+                            if file1['info']['sku'] != file2['info']['sku']:
+                                # This might be different variants - check if expected
+                                if file1['info'].get('variant') != file2['info'].get('variant'):
+                                    inconsistencies.append({
+                                        'type': 'variant_difference',
+                                        'severity': 'info',
+                                        'files': [file1['filename'], file2['filename']],
+                                        'message': f"Different variants detected: {file1['info'].get('variant')} vs {file2['info'].get('variant')}",
+                                        'expected': True
+                                    })
+                                else:
+                                    inconsistencies.append({
+                                        'type': 'sku_mismatch',
+                                        'severity': 'warning',
+                                        'files': [file1['filename'], file2['filename']],
+                                        'message': f"SKU mismatch for same variant: {file1['info']['sku']} vs {file2['info']['sku']}",
+                                        'expected': False
+                                    })
+        
+        # Check variant groups for consistency
+        for variant_key, files in self.variant_groups.items():
+            if len(files) > 1:
+                # All files for same variant should have consistent info
+                for field in ['sku', 'color']:
+                    values = [f['info'].get(field) for f in files if f['info'].get(field)]
+                    if len(set(values)) > 1:
+                        inconsistencies.append({
+                            'type': f'{field}_inconsistency',
+                            'severity': 'error',
+                            'files': [f['filename'] for f in files],
+                            'message': f"Inconsistent {field} for {variant_key}: {', '.join(set(values))}",
+                            'expected': False
+                        })
+        
+        return inconsistencies
+
+class AIValidator:
+    """Advanced AI validation with context awareness"""
+    
+    def __init__(self, api_keys: Dict):
+        self.api_keys = api_keys
+        self.context = []
+    
+    def add_context(self, filename: str, product_info: Dict, text: str):
+        """Add file to validation context"""
+        self.context.append({
+            'filename': filename,
+            'product_info': product_info,
+            'text_preview': text[:1000] if text else ""
+        })
+    
+    def create_comprehensive_prompt(self, filename: str, text: str, product_info: Dict, 
+                                  all_files_context: List[Dict]) -> str:
+        """Create context-aware validation prompt"""
+        
+        # Get product-specific requirements
+        product_type = product_info.get('product_type')
+        product_data = VIVE_PRODUCT_DATABASE.get(product_type, {})
+        
+        prompt = f"""You are a quality control expert for Vive Health medical devices. 
+You're reviewing packaging files with awareness of the entire batch.
+
+CURRENT FILE:
+- Filename: {filename}
+- Product: {product_info.get('product_name', 'Unknown')}
+- Type: {product_info.get('file_type', 'Unknown')}
+- Variant: {product_info.get('variant', 'Unknown')}
+- SKU: {product_info.get('sku', 'Not detected')}
+
+PRODUCT SPECIFICATIONS:
+{json.dumps(product_data, indent=2)}
+
+CONTEXT - OTHER FILES IN BATCH:
+"""
+        
+        # Add context from other files
+        for ctx in all_files_context[:5]:  # Limit to 5 for token management
+            if ctx['filename'] != filename:
+                prompt += f"\n- {ctx['filename']}: {ctx['product_info'].get('product_name')} - {ctx['product_info'].get('variant')}"
+        
+        prompt += f"""
+
+EXTRACTED TEXT (first 2000 chars):
+{text[:2000]}
+
+VALIDATION REQUIREMENTS:
+1. Universal Requirements:
+   - Must have "Made in China"
+   - Must have Vive branding (vive® or Vive Health)
+   - Must have website (vivehealth.com)
+   - Must have contact info
+
+2. Product-Specific Requirements:
+   - Check against product specifications above
+   - Verify SKU format matches pattern
+   - Confirm variant-specific details (color, size, etc.)
+
+3. Cross-File Consistency:
+   - Note any expected differences due to variants
+   - Flag unexpected inconsistencies with other files
+
+RESPONSE FORMAT (JSON):
+{{
+    "overall_assessment": "APPROVED" or "NEEDS_REVISION" or "REVIEW_REQUIRED",
+    "product_confirmed": true/false,
+    "variant_confirmed": "{product_info.get('variant')}",
+    "sku_validation": {{
+        "expected_pattern": "",
+        "found": "",
+        "valid": true/false
+    }},
+    "requirements_check": {{
+        "made_in_china": true/false,
+        "vive_branding": true/false,
+        "website_correct": true/false,
+        "contact_info": true/false
+    }},
+    "critical_issues": [],
+    "warnings": [],
+    "cross_file_notes": [],
+    "variant_specific_notes": [],
+    "improvement_suggestions": []
+}}"""
+        
+        return prompt
+    
+    def validate_with_ai(self, filename: str, text: str, product_info: Dict) -> Dict:
+        """Run AI validation with full context"""
+        prompt = self.create_comprehensive_prompt(filename, text, product_info, self.context)
+        
+        results = {}
+        
+        # Try Claude first
+        if 'claude' in self.api_keys and CLAUDE_AVAILABLE:
+            try:
+                client = anthropic.Anthropic(api_key=self.api_keys['claude'])
+                response = client.messages.create(
+                    model="claude-3-haiku-20240307",
+                    max_tokens=2000,
+                    temperature=0.1,
+                    system="You are a quality control expert. Always respond with valid JSON.",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                
+                results['claude'] = self._parse_response(response.content[0].text)
+            except Exception as e:
+                logger.error(f"Claude error: {e}")
+                results['claude'] = {"error": str(e)}
+        
+        # Try OpenAI
+        if 'openai' in self.api_keys and OPENAI_AVAILABLE:
+            try:
+                client = openai.OpenAI(api_key=self.api_keys['openai'])
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a quality control expert. Always respond with valid JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=2000
+                )
+                
+                results['openai'] = self._parse_response(response.choices[0].message.content)
+            except Exception as e:
+                logger.error(f"OpenAI error: {e}")
+                results['openai'] = {"error": str(e)}
+        
+        return results
+    
+    def _parse_response(self, response_text: str) -> Dict:
+        """Parse AI response"""
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group(0))
+        except:
+            pass
+        
+        return {"error": "Failed to parse response", "raw": response_text}
+
+class ChatInterface:
+    """Interactive chat interface for Q&A about validation results"""
+    
+    def __init__(self, api_keys: Dict):
+        self.api_keys = api_keys
+        if 'chat_messages' not in st.session_state:
+            st.session_state.chat_messages = []
+    
+    def add_message(self, role: str, content: str):
+        """Add message to chat history"""
+        st.session_state.chat_messages.append({
+            'role': role,
+            'content': content,
+            'timestamp': datetime.now()
+        })
+    
+    def get_context_prompt(self, user_question: str, validation_results: Dict) -> str:
+        """Create context-aware prompt for chat"""
+        
+        # Summarize validation results
+        summary = {
+            'total_files': len(validation_results),
+            'products': {},
+            'issues': [],
+            'cross_file_inconsistencies': []
+        }
+        
+        for filename, results in validation_results.items():
+            product = results.get('product_info', {}).get('product_name', 'Unknown')
+            if product not in summary['products']:
+                summary['products'][product] = {
+                    'files': [],
+                    'variants': set(),
+                    'issues': []
+                }
+            
+            summary['products'][product]['files'].append(filename)
+            
+            variant = results.get('product_info', {}).get('variant')
+            if variant:
+                summary['products'][product]['variants'].add(variant)
+            
+            # Collect issues
+            for provider in ['claude', 'openai']:
+                if provider in results and 'ai_results' in results:
+                    ai_result = results['ai_results'].get(provider, {})
+                    if 'critical_issues' in ai_result:
+                        summary['issues'].extend(ai_result['critical_issues'])
+        
+        prompt = f"""You are a quality control expert assistant for Vive Health. 
+You have access to packaging validation results for multiple files.
+
+VALIDATION SUMMARY:
+{json.dumps(summary, indent=2, default=str)}
+
+DETAILED RESULTS AVAILABLE:
+- Product detection and variant identification
+- Cross-file consistency checks
+- AI validation results from multiple providers
+- Specific issues and warnings per file
+
+USER QUESTION: {user_question}
+
+Please provide a helpful, specific answer based on the validation results. 
+If the user asks about specific files or issues, reference them directly.
+Be concise but thorough. Suggest actionable next steps when relevant."""
+
+        return prompt
+    
+    def process_message(self, user_message: str, validation_results: Dict) -> str:
+        """Process user message and return AI response"""
+        
+        # Add user message to history
+        self.add_message('user', user_message)
+        
+        # Create context-aware prompt
+        prompt = self.get_context_prompt(user_message, validation_results)
+        
+        # Get AI response
+        response = "I'm having trouble connecting to the AI service."
+        
+        if 'claude' in self.api_keys and CLAUDE_AVAILABLE:
+            try:
+                client = anthropic.Anthropic(api_key=self.api_keys['claude'])
+                
+                # Include chat history for context
+                messages = []
+                for msg in st.session_state.chat_messages[-5:]:  # Last 5 messages
+                    if msg['role'] == 'user':
+                        messages.append({"role": "user", "content": msg['content']})
+                    else:
+                        messages.append({"role": "assistant", "content": msg['content']})
+                
+                # Add current prompt
+                messages.append({"role": "user", "content": prompt})
+                
+                ai_response = client.messages.create(
+                    model="claude-3-sonnet-20240229",
+                    max_tokens=1000,
+                    temperature=0.7,
+                    messages=messages
+                )
+                
+                response = ai_response.content[0].text
+                
+            except Exception as e:
+                logger.error(f"Chat error: {e}")
+                response = f"Error: {str(e)}"
+        
+        # Add AI response to history
+        self.add_message('assistant', response)
+        
+        return response
+
+def extract_text_from_pdf(file_bytes, filename=""):
+    """Extract text from PDF with multiple methods"""
     extracted_text = ""
-    pages_found = 0
+    extraction_method = "none"
+    page_count = 0
     
     try:
-        # Try PyPDF2 first (always available)
-        file_bytes.seek(0)
-        pdf_reader = PyPDF2.PdfReader(file_bytes)
-        pages_found = len(pdf_reader.pages)
-        
-        for page_num, page in enumerate(pdf_reader.pages):
-            try:
-                page_text = page.extract_text()
-                if page_text and page_text.strip():
-                    extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
-            except:
-                continue
-        
-        # Try pdfplumber if available and no text found
-        if not extracted_text.strip() and PDFPLUMBER_AVAILABLE:
+        # Try pdfplumber first
+        if PDFPLUMBER_AVAILABLE:
             try:
                 import pdfplumber
                 file_bytes.seek(0)
                 with pdfplumber.open(file_bytes) as pdf:
+                    page_count = len(pdf.pages)
                     for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            extracted_text += page_text + "\n"
+                        text = page.extract_text()
+                        if text:
+                            extracted_text += text + "\n"
+                            extraction_method = "pdfplumber"
             except:
                 pass
         
-        # Return result
-        if extracted_text.strip():
-            return extracted_text.strip(), "success", pages_found
-        else:
-            return "", "no_text", pages_found
-            
+        # Try PyMuPDF
+        if not extracted_text and PYMUPDF_AVAILABLE:
+            try:
+                import fitz
+                file_bytes.seek(0)
+                doc = fitz.open(stream=file_bytes.read(), filetype="pdf")
+                page_count = len(doc)
+                
+                for page in doc:
+                    text = page.get_text()
+                    if text:
+                        extracted_text += text + "\n"
+                        extraction_method = "pymupdf"
+                
+                doc.close()
+                file_bytes.seek(0)
+            except:
+                pass
+        
+        # Fallback to PyPDF2
+        if not extracted_text:
+            try:
+                file_bytes.seek(0)
+                reader = PyPDF2.PdfReader(file_bytes)
+                page_count = len(reader.pages)
+                
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        extracted_text += text + "\n"
+                        extraction_method = "pypdf2"
+            except:
+                pass
+    
     except Exception as e:
         logger.error(f"PDF extraction error: {e}")
-        return "", "error", 0
+    
+    return extracted_text.strip(), extraction_method, page_count
 
-def create_manual_validation_form(file_type, filename):
-    """Create manual validation form for files where text extraction failed"""
-    template = MANUAL_TEMPLATES.get(file_type, MANUAL_TEMPLATES['packaging'])
+def display_validation_dashboard(results: Dict, cross_validator: CrossFileValidator):
+    """Display comprehensive validation dashboard"""
     
-    st.markdown(f"### {template['title']}")
-    st.info(f"Please manually review **{filename}** and fill out this checklist:")
+    # Summary metrics
+    st.markdown("### 📊 Validation Summary")
     
-    form_data = {}
+    col1, col2, col3, col4 = st.columns(4)
     
-    for field in template['fields']:
-        if field['type'] == 'checkbox':
-            form_data[field['name']] = st.checkbox(field['label'], key=f"{filename}_{field['name']}")
-        elif field['type'] == 'text':
-            default = field.get('default', '')
-            placeholder = field.get('placeholder', '')
-            form_data[field['name']] = st.text_input(
-                field['label'], 
-                value=default, 
-                placeholder=placeholder,
-                key=f"{filename}_{field['name']}"
-            )
-        elif field['type'] == 'select':
-            form_data[field['name']] = st.selectbox(
-                field['label'], 
-                options=field['options'],
-                key=f"{filename}_{field['name']}"
-            )
-        elif field['type'] == 'textarea':
-            form_data[field['name']] = st.text_area(
-                field['label'],
-                key=f"{filename}_{field['name']}"
-            )
-    
-    return form_data
-
-def validate_manual_input(form_data, file_type):
-    """Validate manual input and generate assessment"""
-    issues = []
-    warnings = []
-    
-    if file_type == 'packaging':
-        if not form_data.get('vive_logo'):
-            issues.append("Vive logo missing")
-        if not form_data.get('made_in_china'):
-            issues.append("Made in China text missing")
-        if not form_data.get('barcode_present'):
-            warnings.append("Barcode/UPC not confirmed")
-        
-        # Check SKU format
-        sku = form_data.get('sku', '')
-        if not sku.startswith('LVA3100'):
-            issues.append(f"Invalid SKU format: {sku}")
-            
-    elif file_type == 'washtag':
-        if not form_data.get('made_in_china'):
-            issues.append("Made in China text missing")
-        if form_data.get('materials') != "60% Polyester, 20% PVC, 20% LDPE":
-            issues.append("Material composition incorrect")
-            
-    elif file_type == 'quickstart':
-        if not form_data.get('vive_logo'):
-            issues.append("Vive logo missing")
-        if not form_data.get('warranty'):
-            warnings.append("Warranty information not confirmed")
-    
-    # Determine overall assessment
-    if issues:
-        assessment = "NEEDS_REVISION"
-    elif warnings:
-        assessment = "REVIEW_REQUIRED"
-    else:
-        assessment = "APPROVED"
-    
-    return {
-        'overall_assessment': assessment,
-        'critical_issues': issues,
-        'warnings': warnings,
-        'form_data': form_data,
-        'manual_review': True
-    }
-
-def create_vive_specific_prompt(text, filename, product_info, checklist_items):
-    """Create Vive Health specific validation prompt"""
-    if not text:
-        return None
-    
-    prompt = f"""You are a quality control expert for Vive Health medical devices, specifically reviewing packaging files for the Wheelchair Bag Advanced product line.
-
-COMPANY STANDARDS:
-- Brand: Vive Health (registered trademark: vive®)
-- Website: vivehealth.com
-- Support: 1-800-487-3808
-- Email: service@vivehealth.com
-- All products MUST say "Made in China"
-
-FILE INFORMATION:
-- Filename: {filename}
-- Product: {product_info.get('product', 'unknown')} 
-- Type: {product_info.get('type', 'unknown')}
-- Color variant: {product_info.get('color', 'unknown')}
-- Expected SKU: {product_info.get('sku_detected', 'unknown')}
-
-EXTRACTED TEXT (first 3000 chars):
-{text[:3000]}
-
-SPECIFIC VALIDATION REQUIREMENTS:
-1. For Wheelchair Bag Advanced:
-   - SKU format: LVA3100XXX (BLK for Black, PUR for Purple Floral)
-   - Materials MUST be: 60% Polyester, 20% PVC, 20% LDPE
-   - Temperature range: 65°F to 85°F
-   - Must include warranty information (1 year)
-
-2. Critical checks:
-   - Origin MUST be "Made in China" (not Taiwan, Vietnam, etc.)
-   - Vive or vive® branding must be present
-   - Website URL must be exact: vivehealth.com or vhealth.link/fxv
-   - California Prop 65 warning if applicable
-
-VALIDATION CHECKLIST:
-{json.dumps(checklist_items, indent=2)}
-
-RESPONSE FORMAT - You must respond with valid JSON:
-{{
-    "overall_assessment": "APPROVED" or "NEEDS_REVISION" or "REVIEW_REQUIRED",
-    "product_identified": "wheelchair_bag" or "unknown",
-    "color_variant": "BLACK" or "PURPLE FLORAL" or "unknown",
-    "checklist_validation": {{
-        "item_name": {{
-            "status": "PASS" or "FAIL" or "UNSURE",
-            "explanation": "specific details"
-        }}
-    }},
-    "critical_issues": ["list of critical issues"],
-    "warnings": ["list of warnings"],
-    "spelling_errors": ["list of spelling/branding errors"],
-    "missing_elements": ["list of required but missing elements"],
-    "sku_validation": {{
-        "expected": "LVA3100XXX",
-        "found": "actual SKU if found",
-        "correct": true/false
-    }}
-}}
-
-Analyze thoroughly and provide detailed feedback."""
-
-    return prompt
-
-def parse_ai_response(response_text, provider):
-    """Parse AI response with robust error handling"""
-    logger.info(f"Parsing {provider} response")
-    
-    parsed = {
-        'overall_assessment': 'UNKNOWN',
-        'product_identified': 'unknown',
-        'color_variant': 'unknown',
-        'checklist_validation': {},
-        'critical_issues': [],
-        'warnings': [],
-        'spelling_errors': [],
-        'missing_elements': [],
-        'sku_validation': {}
-    }
-    
-    try:
-        # Extract JSON
-        json_match = re.search(r'\{[\s\S]*\}', response_text)
-        if json_match:
-            json_text = json_match.group(0)
-            result = json.loads(json_text)
-            
-            # Map fields
-            for key in parsed.keys():
-                if key in result:
-                    parsed[key] = result[key]
-            
-            return parsed
-    except Exception as e:
-        logger.warning(f"JSON parsing failed: {e}")
-    
-    parsed['error'] = f"Failed to parse {provider} response"
-    return parsed
-
-def call_claude(prompt, api_key):
-    """Call Claude API"""
-    if not CLAUDE_AVAILABLE or not api_key:
-        logger.warning("Claude API not available or no API key")
-        return None
-    
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        
-        response = client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=2000,
-            temperature=0.1,
-            system="You are a quality control expert for Vive Health. Always respond with valid JSON only.",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        result = parse_ai_response(response.content[0].text, 'Claude')
-        return result if result else {"error": "Failed to parse response", "overall_assessment": "ERROR"}
-            
-    except Exception as e:
-        logger.error(f"Claude error: {e}")
-        return {"error": str(e), "overall_assessment": "ERROR"}
-
-def call_openai(prompt, api_key):
-    """Call OpenAI API"""
-    if not OPENAI_AVAILABLE or not api_key:
-        logger.warning("OpenAI API not available or no API key")
-        return None
-    
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a quality control expert for Vive Health. Always respond with valid JSON only."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=2000
-        )
-        
-        result = parse_ai_response(response.choices[0].message.content, 'OpenAI')
-        return result if result else {"error": "Failed to parse response", "overall_assessment": "ERROR"}
-            
-    except Exception as e:
-        logger.error(f"OpenAI error: {e}")
-        return {"error": str(e), "overall_assessment": "ERROR"}
-
-def display_vive_validation_results(results, provider, filename):
-    """Display validation results with Vive Health specific formatting"""
-    
-    if "error" in results:
-        st.error(f"**{provider} Error:** {results['error']}")
-        return
-    
-    # Check if manual review
-    if results.get('manual_review'):
-        st.info("📝 Manual Review Results")
-    
-    # Overall assessment with color coding
-    assessment = results.get('overall_assessment', 'UNKNOWN')
-    assessment_color = {
-        'APPROVED': 'success',
-        'NEEDS_REVISION': 'error',
-        'REVIEW_REQUIRED': 'warning',
-        'ERROR': 'error',
-        'UNKNOWN': 'info'
-    }.get(assessment, 'info')
-    
-    col1, col2, col3 = st.columns([2, 1, 1])
+    total_files = len(results)
+    approved = sum(1 for r in results.values() 
+                  if any(ai.get('overall_assessment') == 'APPROVED' 
+                        for ai in r.get('ai_results', {}).values()))
+    needs_revision = sum(1 for r in results.values() 
+                        if any(ai.get('overall_assessment') == 'NEEDS_REVISION' 
+                              for ai in r.get('ai_results', {}).values()))
     
     with col1:
-        st.markdown(f'<div class="validation-result {assessment_color}"><strong>Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value">{total_files}</div>
+            <div>Total Files</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        product = results.get('product_identified', 'unknown')
-        if product == 'wheelchair_bag':
-            st.success(f"✅ Product: Wheelchair Bag")
-        else:
-            st.warning(f"❓ Product: {product}")
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color: #48bb78;">{approved}</div>
+            <div>Approved</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col3:
-        color = results.get('color_variant', 'unknown')
-        if color in ['BLACK', 'PURPLE FLORAL']:
-            st.success(f"✅ Color: {color}")
-        else:
-            st.warning(f"❓ Color: {color}")
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color: #f56565;">{needs_revision}</div>
+            <div>Needs Revision</div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # SKU Validation
-    sku_info = results.get('sku_validation', {})
-    if sku_info:
-        expected = sku_info.get('expected', 'N/A')
-        found = sku_info.get('found', 'Not found')
-        correct = sku_info.get('correct', False)
+    with col4:
+        inconsistencies = cross_validator.validate_consistency()
+        critical_count = len([i for i in inconsistencies if i['severity'] == 'error'])
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color: #ed8936;">{critical_count}</div>
+            <div>Critical Issues</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Product breakdown
+    st.markdown("### 🏷️ Products Detected")
+    
+    product_summary = defaultdict(lambda: {'count': 0, 'variants': set(), 'files': []})
+    
+    for filename, result in results.items():
+        product_type = result.get('product_info', {}).get('product_type')
+        if product_type:
+            product_summary[product_type]['count'] += 1
+            variant = result.get('product_info', {}).get('variant')
+            if variant:
+                product_summary[product_type]['variants'].add(variant)
+            product_summary[product_type]['files'].append(filename)
+    
+    product_cols = st.columns(len(product_summary))
+    for idx, (product_type, info) in enumerate(product_summary.items()):
+        with product_cols[idx]:
+            product_name = VIVE_PRODUCT_DATABASE.get(product_type, {}).get('name', product_type)
+            st.markdown(f"""
+            <div class="product-card">
+                <h4>{product_name}</h4>
+                <p>Files: {info['count']}</p>
+                <p>Variants: {', '.join(info['variants']) if info['variants'] else 'N/A'}</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Cross-file validation results
+    st.markdown("### 🔄 Cross-File Validation")
+    
+    inconsistencies = cross_validator.validate_consistency()
+    
+    if inconsistencies:
+        # Group by severity
+        errors = [i for i in inconsistencies if i['severity'] == 'error']
+        warnings = [i for i in inconsistencies if i['severity'] == 'warning']
+        info = [i for i in inconsistencies if i['severity'] == 'info']
         
-        if correct:
-            st.success(f"✅ SKU Correct: {found}")
-        else:
-            st.error(f"❌ SKU Issue - Expected: {expected}, Found: {found}")
-    
-    # Critical Issues
-    critical = results.get('critical_issues', [])
-    if critical:
-        st.markdown("#### 🚨 Critical Issues")
-        for issue in critical:
-            st.markdown(f'<div class="validation-result error">❌ {issue}</div>', unsafe_allow_html=True)
-    
-    # Missing Elements
-    missing = results.get('missing_elements', [])
-    if missing:
-        st.markdown("#### ⚠️ Missing Required Elements")
-        for element in missing:
-            st.markdown(f"- {element}")
-    
-    # Checklist validation
-    checklist = results.get('checklist_validation', {})
-    if checklist:
-        with st.expander("📋 Detailed Checklist Results", expanded=True):
-            for item, details in checklist.items():
-                if isinstance(details, dict):
-                    status = details.get('status', 'UNKNOWN')
-                    explanation = details.get('explanation', '')
-                    
-                    status_symbol = {'PASS': '✅', 'FAIL': '❌', 'UNSURE': '⚠️'}.get(status, '❓')
-                    status_class = {'PASS': 'checklist-pass', 'FAIL': 'checklist-fail', 'UNSURE': 'checklist-warning'}.get(status, 'checklist-warning')
-                    
-                    st.markdown(f'<div class="checklist-item {status_class}">{status_symbol} {item}: {explanation}</div>', unsafe_allow_html=True)
-    
-    # Warnings
-    warnings = results.get('warnings', [])
-    if warnings:
-        with st.expander("⚠️ Warnings", expanded=False):
-            for warning in warnings:
-                st.markdown(f"- {warning}")
+        if errors:
+            st.markdown("#### ❌ Critical Issues")
+            for issue in errors:
+                st.markdown(f"""
+                <div class="cross-check-alert">
+                    <strong>{issue['type'].replace('_', ' ').title()}</strong><br>
+                    {issue['message']}<br>
+                    <small>Files: {', '.join(issue['files'])}</small>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        if warnings:
+            st.markdown("#### ⚠️ Warnings")
+            for issue in warnings:
+                st.warning(f"{issue['message']} (Files: {', '.join(issue['files'])})")
+        
+        if info:
+            st.markdown("#### ℹ️ Expected Variations")
+            for issue in info:
+                if issue.get('expected', False):
+                    st.info(f"{issue['message']} - This is expected for different variants")
+    else:
+        st.success("✅ No cross-file inconsistencies detected!")
 
-def generate_vive_summary_report(results):
-    """Generate Vive Health specific summary report"""
-    report = []
-    report.append("VIVE HEALTH PACKAGING VALIDATION REPORT")
-    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    report.append("=" * 60)
-    report.append("")
+def display_file_results(filename: str, results: Dict):
+    """Display detailed results for a single file"""
     
-    # Count results by product
-    product_summary = defaultdict(lambda: {'total': 0, 'approved': 0, 'needs_revision': 0, 'issues': []})
+    product_info = results.get('product_info', {})
     
-    for filename, file_results in results.items():
-        # Safely get product info
-        if isinstance(file_results, dict) and 'product_info' in file_results:
-            product = file_results.get('product_info', {}).get('product', 'unknown')
-        else:
-            product = 'unknown'
-            
-        product_summary[product]['total'] += 1
-        
-        for provider in ['claude', 'openai', 'manual']:
-            if provider in file_results and isinstance(file_results[provider], dict):
-                assessment = file_results[provider].get('overall_assessment', 'UNKNOWN')
-                if assessment == 'APPROVED':
-                    product_summary[product]['approved'] += 1
-                elif assessment == 'NEEDS_REVISION':
-                    product_summary[product]['needs_revision'] += 1
-                
-                # Collect critical issues
-                critical = file_results[provider].get('critical_issues', [])
-                product_summary[product]['issues'].extend(critical)
-    
-    # Product summary
-    report.append("PRODUCT SUMMARY:")
-    for product, stats in product_summary.items():
-        report.append(f"\n{product.upper().replace('_', ' ')}:")
-        report.append(f"  Total Files: {stats['total']}")
-        report.append(f"  Approved: {stats['approved']}")
-        report.append(f"  Needs Revision: {stats['needs_revision']}")
-        if stats['issues']:
-            report.append(f"  Common Issues:")
-            for issue in set(stats['issues']):
-                report.append(f"    - {issue}")
-    
-    report.append("\n" + "=" * 60 + "\n")
-    
-    # Detailed file results
-    report.append("DETAILED FILE RESULTS:\n")
-    
-    for filename, file_results in results.items():
-        report.append(f"FILE: {filename}")
-        report.append("-" * 40)
-        
-        # Safely get product info
-        if isinstance(file_results, dict) and 'product_info' in file_results:
-            product_info = file_results.get('product_info', {})
-            report.append(f"Product: {product_info.get('product', 'unknown').replace('_', ' ').title()}")
-            report.append(f"Type: {product_info.get('type', 'unknown')}")
-            report.append(f"Color: {product_info.get('color', 'unknown')}")
-        else:
-            report.append("Product: unknown")
-            report.append("Type: unknown")
-            report.append("Color: unknown")
-        
-        if file_results.get('extraction_failed'):
-            report.append(f"STATUS: Text extraction failed - Manual review used")
-        
-        for provider in ['claude', 'openai', 'manual']:
-            if provider in file_results and isinstance(file_results[provider], dict):
-                ai_results = file_results[provider]
-                report.append(f"\n{provider.upper()} Assessment: {ai_results.get('overall_assessment', 'UNKNOWN')}")
-                
-                # Critical issues
-                critical = ai_results.get('critical_issues', [])
-                if critical:
-                    report.append("\nCritical Issues:")
-                    for issue in critical:
-                        report.append(f"  - {issue}")
-                
-                # Missing elements
-                missing = ai_results.get('missing_elements', [])
-                if missing:
-                    report.append("\nMissing Elements:")
-                    for element in missing:
-                        report.append(f"  - {element}")
-        
-        report.append("\n" + "=" * 60 + "\n")
-    
-    return "\n".join(report)
-
-def main():
-    inject_css()
-    
-    # Initialize session state
-    if 'validation_results' not in st.session_state:
-        st.session_state.validation_results = None
-    if 'ai_providers' not in st.session_state:
-        st.session_state.ai_providers = []
-    if 'manual_reviews' not in st.session_state:
-        st.session_state.manual_reviews = {}
-    
-    # Header with Vive branding
-    st.markdown("""
-    <div class="main-header">
-        <div class="vive-logo">vive®</div>
-        <h1>Packaging & Label Validator</h1>
-        <p>AI-powered quality control for Vive Health products</p>
+    # File info header
+    st.markdown(f"""
+    <div class="product-card">
+        <h4>{filename}</h4>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;">
+            <div>
+                <strong>Product:</strong><br>
+                {product_info.get('product_name', 'Unknown')}
+            </div>
+            <div>
+                <strong>Variant:</strong><br>
+                {product_info.get('variant', 'Not specified')}
+            </div>
+            <div>
+                <strong>File Type:</strong><br>
+                {product_info.get('file_type', 'Unknown')}
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
-    # Check API availability
+    # AI Validation Results
+    if 'ai_results' in results:
+        st.markdown("#### 🤖 AI Validation Results")
+        
+        tabs = st.tabs([provider.title() for provider in results['ai_results'].keys()])
+        
+        for idx, (provider, ai_result) in enumerate(results['ai_results'].items()):
+            with tabs[idx]:
+                if 'error' in ai_result:
+                    st.error(f"Error: {ai_result['error']}")
+                else:
+                    # Overall assessment
+                    assessment = ai_result.get('overall_assessment', 'UNKNOWN')
+                    assessment_color = {
+                        'APPROVED': 'status-pass',
+                        'NEEDS_REVISION': 'status-fail',
+                        'REVIEW_REQUIRED': 'status-warning'
+                    }.get(assessment, 'status-warning')
+                    
+                    st.markdown(f'<span class="status-badge {assessment_color}">{assessment}</span>', 
+                              unsafe_allow_html=True)
+                    
+                    # Requirements check
+                    req_check = ai_result.get('requirements_check', {})
+                    if req_check:
+                        cols = st.columns(4)
+                        for idx, (req, status) in enumerate(req_check.items()):
+                            with cols[idx % 4]:
+                                if status:
+                                    st.success(f"✅ {req.replace('_', ' ').title()}")
+                                else:
+                                    st.error(f"❌ {req.replace('_', ' ').title()}")
+                    
+                    # Issues and warnings
+                    critical = ai_result.get('critical_issues', [])
+                    if critical:
+                        st.markdown("**Critical Issues:**")
+                        for issue in critical:
+                            st.error(f"• {issue}")
+                    
+                    warnings = ai_result.get('warnings', [])
+                    if warnings:
+                        st.markdown("**Warnings:**")
+                        for warning in warnings:
+                            st.warning(f"• {warning}")
+                    
+                    # Cross-file notes
+                    cross_notes = ai_result.get('cross_file_notes', [])
+                    if cross_notes:
+                        st.markdown("**Cross-File Observations:**")
+                        for note in cross_notes:
+                            st.info(f"• {note}")
+    
+    # Extraction details
+    with st.expander("📄 Extraction Details"):
+        st.markdown(f"""
+        - **Extraction Method:** {results.get('extraction_method', 'Unknown')}
+        - **Pages:** {results.get('page_count', 0)}
+        - **Text Length:** {len(results.get('text', ''))} characters
+        - **Confidence Score:** {product_info.get('confidence', 0)}%
+        """)
+        
+        if results.get('text'):
+            st.text_area("Text Preview", results.get('text', '')[:500] + "...", height=200)
+
+def main():
+    inject_advanced_css()
+    
+    # Initialize session state
+    if 'validation_results' not in st.session_state:
+        st.session_state.validation_results = {}
+    if 'cross_validator' not in st.session_state:
+        st.session_state.cross_validator = CrossFileValidator()
+    if 'ai_validator' not in st.session_state:
+        st.session_state.ai_validator = None
+    if 'chat_interface' not in st.session_state:
+        st.session_state.chat_interface = None
+    
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🏥 Vive Health Advanced Packaging Validator</h1>
+        <p>Multi-product validation with AI-powered cross-file analysis</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Get API keys
     api_keys = get_api_keys()
     
     # Sidebar
     with st.sidebar:
-        st.markdown("### 🏥 Vive Health QC System")
+        st.markdown("### 🔧 System Status")
         
-        st.markdown("#### 🤖 AI Providers")
-        
-        available_providers = []
-        if 'claude' in api_keys and CLAUDE_AVAILABLE:
-            available_providers.append('claude')
-            st.success("✅ Claude Available")
+        # AI Status
+        if api_keys:
+            if 'claude' in api_keys:
+                st.success("✅ Claude AI Ready")
+            if 'openai' in api_keys:
+                st.success("✅ OpenAI Ready")
+            
+            # Initialize AI components
+            if not st.session_state.ai_validator:
+                st.session_state.ai_validator = AIValidator(api_keys)
+            if not st.session_state.chat_interface:
+                st.session_state.chat_interface = ChatInterface(api_keys)
         else:
-            st.error("❌ Claude Not Available")
-        
-        if 'openai' in api_keys and OPENAI_AVAILABLE:
-            available_providers.append('openai')
-            st.success("✅ OpenAI Available")
-        else:
-            st.error("❌ OpenAI Not Available")
-        
-        if not available_providers:
-            st.warning("No AI providers configured")
-            st.info("Manual review mode available")
+            st.error("❌ No AI providers configured")
         
         st.markdown("---")
         
-        # PDF Libraries
-        st.markdown("#### 📄 PDF Processing")
+        # Product Database
+        st.markdown("### 📦 Product Database")
+        st.info(f"**{len(VIVE_PRODUCT_DATABASE)}** products configured")
         
-        pdf_status = []
-        if PDFPLUMBER_AVAILABLE:
-            pdf_status.append("✅ pdfplumber")
-        if PYMUPDF_AVAILABLE:
-            pdf_status.append("✅ PyMuPDF")
-        pdf_status.append("✅ PyPDF2")
-        
-        st.success(" | ".join(pdf_status))
+        with st.expander("View Products"):
+            for product_key, product_info in VIVE_PRODUCT_DATABASE.items():
+                st.markdown(f"**{product_info['name']}**")
+                st.markdown(f"- SKU Pattern: `{product_info['sku_pattern']}`")
+                st.markdown(f"- Variants: {len(product_info.get('variants', {}))}")
         
         st.markdown("---")
         
-        # Product reference
-        st.markdown("### 📦 Product Standards")
+        # Help
+        st.markdown("### ❓ Help")
+        st.info("""
+        **Features:**
+        - Multi-product support
+        - Cross-file validation
+        - Variant awareness
+        - AI chat interface
+        - Batch insights
         
-        with st.expander("Wheelchair Bag Advanced"):
-            st.markdown("""
-            **SKUs:**
-            - LVA3100BLK (Black)
-            - LVA3100PUR (Purple Floral)
-            
-            **Materials:**
-            - 60% Polyester
-            - 20% PVC
-            - 20% LDPE
-            
-            **Requirements:**
-            - Made in China
-            - Temperature: 65°F-85°F
-            - 1 year warranty
-            - Website: vivehealth.com
-            """)
+        **File Types:**
+        - Packaging artwork
+        - Wash tags
+        - Quick start guides
+        - Manuals
+        - QC sheets
+        """)
+    
+    # Main content tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload & Validate", "📊 Results Dashboard", 
+                                      "💬 AI Assistant", "📥 Export"])
+    
+    with tab1:
+        st.markdown("### Upload Packaging Files")
+        st.info("Upload all packaging files for comprehensive cross-validation")
         
-        with st.expander("Validation Checklist"):
-            for category, items in VIVE_VALIDATION_CHECKLIST.items():
-                st.markdown(f"**{category}:**")
-                for item in items:
-                    st.markdown(f"• {item}")
-    
-    # Main content area
-    st.markdown("### 🚀 How to Use")
-    st.info("""
-    1. Upload your packaging PDFs below
-    2. The system will attempt to extract text and validate automatically
-    3. For image-based PDFs, you'll get a manual review form
-    4. Review results and download reports
-    """)
-    
-    # Provider selection
-    if available_providers:
-        st.markdown("### 🤖 Select AI Providers")
-        col1, col2 = st.columns(2)
+        uploaded_files = st.file_uploader(
+            "Select PDF files",
+            type=['pdf'],
+            accept_multiple_files=True,
+            help="Upload packaging, labels, guides, and documentation"
+        )
         
-        providers = []
-        with col1:
-            if 'claude' in available_providers:
-                use_claude = st.checkbox("**Use Claude AI**", value=True)
-                if use_claude:
-                    providers.append('claude')
-        
-        with col2:
-            if 'openai' in available_providers:
-                use_openai = st.checkbox("**Use OpenAI**", value=True)
-                if use_openai:
-                    providers.append('openai')
-    else:
-        providers = []
-        st.info("📝 Manual review mode - AI providers not configured")
-    
-    st.session_state.ai_providers = providers
-    
-    # File upload
-    st.markdown("### 📤 Upload Packaging Files")
-    
-    uploaded_files = st.file_uploader(
-        "Select PDF files (packaging, wash tags, quick start guides)",
-        type=['pdf'],
-        accept_multiple_files=True,
-        help="Upload all wheelchair bag packaging files for validation"
-    )
-    
-    if uploaded_files:
-        if st.button("🚀 Start Validation", type="primary", use_container_width=True):
-            results = {}
+        if uploaded_files:
+            col1, col2 = st.columns([3, 1])
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            with col1:
+                st.markdown(f"**{len(uploaded_files)}** files selected")
             
-            for idx, file in enumerate(uploaded_files):
-                status_text.text(f"Processing {file.name}...")
-                
-                # Extract text
-                file.seek(0)
-                text, extraction_status, pages = extract_text_from_pdf_simple(file, file.name)
-                
-                # Get product info
-                product_info = detect_vive_product_type(file.name, text)
-                
-                # Store file results
-                file_results = {
-                    'product_info': product_info,
-                    'pages': pages,
-                    'extraction_status': extraction_status
-                }
-                
-                # Check if we got text
-                if text and extraction_status == "success":
-                    file_results['text_preview'] = text[:500]
-                    
-                    # Determine checklist based on file type
-                    file_type = product_info.get('type', 'packaging')
-                    checklist_key = {
-                        'packaging': 'Packaging Artwork',
-                        'washtag': 'Wash Tag/Care Label',
-                        'quickstart': 'Quick Start Guide'
-                    }.get(file_type, 'Packaging Artwork')
-                    
-                    checklist_items = VIVE_VALIDATION_CHECKLIST.get(checklist_key, [])
-                    
-                    # Create prompt and call AI providers
-                    if providers:
-                        prompt = create_vive_specific_prompt(text, file.name, product_info, checklist_items)
+            with col2:
+                if st.button("🚀 Validate All", type="primary", use_container_width=True):
+                    with st.spinner("Processing files..."):
+                        progress_bar = st.progress(0)
                         
-                        if prompt:
-                            if 'claude' in providers:
-                                with st.spinner(f"🤖 Claude reviewing {file.name}..."):
-                                    claude_result = call_claude(prompt, api_keys['claude'])
-                                    if claude_result:
-                                        file_results['claude'] = claude_result
-                                    time.sleep(0.5)
+                        # Reset validators
+                        st.session_state.cross_validator = CrossFileValidator()
+                        st.session_state.validation_results = {}
+                        
+                        for idx, file in enumerate(uploaded_files):
+                            # Update progress
+                            progress_bar.progress((idx + 1) / len(uploaded_files))
                             
-                            if 'openai' in providers:
-                                with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
-                                    openai_result = call_openai(prompt, api_keys['openai'])
-                                    if openai_result:
-                                        file_results['openai'] = openai_result
-                                    time.sleep(0.5)
+                            # Extract text
+                            file.seek(0)
+                            text, method, pages = extract_text_from_pdf(file, file.name)
+                            
+                            # Detect product
+                            product_info = ProductDetector.detect_product(file.name, text)
+                            
+                            # Store results
+                            results = {
+                                'product_info': product_info,
+                                'text': text,
+                                'extraction_method': method,
+                                'page_count': pages,
+                                'timestamp': datetime.now().isoformat()
+                            }
+                            
+                            # Add to cross-validator
+                            st.session_state.cross_validator.add_file(
+                                file.name, product_info, text
+                            )
+                            
+                            # AI validation if text extracted
+                            if text and st.session_state.ai_validator:
+                                # Add context
+                                st.session_state.ai_validator.add_context(
+                                    file.name, product_info, text
+                                )
+                                
+                                # Run validation
+                                ai_results = st.session_state.ai_validator.validate_with_ai(
+                                    file.name, text, product_info
+                                )
+                                results['ai_results'] = ai_results
+                            
+                            st.session_state.validation_results[file.name] = results
+                        
+                        st.success("✅ Validation complete!")
+                        st.balloons()
+    
+    with tab2:
+        if st.session_state.validation_results:
+            display_validation_dashboard(
+                st.session_state.validation_results,
+                st.session_state.cross_validator
+            )
+            
+            st.markdown("### 📁 Individual File Results")
+            
+            # File grid
+            st.markdown('<div class="file-grid">', unsafe_allow_html=True)
+            
+            for filename in st.session_state.validation_results:
+                if st.button(filename, key=f"file_{filename}", use_container_width=True):
+                    with st.expander(f"Details: {filename}", expanded=True):
+                        display_file_results(filename, st.session_state.validation_results[filename])
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.info("Upload files in the first tab to see results")
+    
+    with tab3:
+        st.markdown("### 💬 AI Quality Assistant")
+        st.info("Ask questions about your validation results")
+        
+        if st.session_state.validation_results and st.session_state.chat_interface:
+            # Display chat history
+            for message in st.session_state.chat_messages:
+                if message['role'] == 'user':
+                    st.markdown(f'<div class="chat-message user-message">👤 {message["content"]}</div>', 
+                              unsafe_allow_html=True)
                 else:
-                    # Text extraction failed - mark for manual review
-                    file_results['extraction_failed'] = True
-                    file_results['needs_manual_review'] = True
-                    
-                    if extraction_status == "no_text":
-                        file_results['skip_reason'] = f"No text found in PDF ({pages} pages)"
-                    else:
-                        file_results['skip_reason'] = "PDF extraction failed"
-                
-                results[file.name] = file_results
-                progress_bar.progress((idx + 1) / len(uploaded_files))
+                    st.markdown(f'<div class="chat-message ai-message">🤖 {message["content"]}</div>', 
+                              unsafe_allow_html=True)
             
-            progress_bar.empty()
-            status_text.empty()
-            st.success("✅ Initial processing complete!")
-            st.session_state.validation_results = results
-            st.rerun()
+            # Chat input
+            user_input = st.text_input("Ask about your validation results...", 
+                                     placeholder="e.g., What are the main issues with the wheelchair bag packaging?")
+            
+            if user_input:
+                with st.spinner("Thinking..."):
+                    response = st.session_state.chat_interface.process_message(
+                        user_input, 
+                        st.session_state.validation_results
+                    )
+                st.rerun()
+            
+            # Suggested questions
+            st.markdown("#### 💡 Suggested Questions")
+            suggestions = [
+                "What are the most critical issues across all files?",
+                "Are there any inconsistencies between color variants?",
+                "Which files need immediate attention?",
+                "Summarize the validation results by product type",
+                "What improvements would you recommend?"
+            ]
+            
+            cols = st.columns(2)
+            for idx, suggestion in enumerate(suggestions):
+                with cols[idx % 2]:
+                    if st.button(suggestion, key=f"suggest_{idx}"):
+                        st.session_state.chat_interface.process_message(
+                            suggestion,
+                            st.session_state.validation_results
+                        )
+                        st.rerun()
+        else:
+            st.warning("Please validate files first to use the AI assistant")
     
-    # Display results and manual review forms
-    if st.session_state.validation_results:
-        st.markdown("---")
-        st.markdown("## 📊 Validation Results")
+    with tab4:
+        st.markdown("### 📥 Export Options")
         
-        # Count files needing manual review
-        manual_review_files = [
-            (filename, data) for filename, data in st.session_state.validation_results.items()
-            if data.get('needs_manual_review', False)
-        ]
-        
-        if manual_review_files:
-            st.markdown("### 📝 Manual Review Required")
-            st.warning(f"{len(manual_review_files)} file(s) require manual review (image-based PDFs)")
+        if st.session_state.validation_results:
+            col1, col2, col3 = st.columns(3)
             
-            for filename, file_data in manual_review_files:
-                with st.expander(f"📄 {filename} - Manual Review", expanded=True):
-                    # Show PDF info
-                    st.markdown(f"""
-                    <div class="pdf-status">
-                        <strong>Status:</strong> {file_data.get('skip_reason', 'Unknown')}<br>
-                        <strong>Pages:</strong> {file_data.get('pages', 0)}<br>
-                        <strong>Type:</strong> {file_data.get('product_info', {}).get('type', 'unknown')}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Get file type for appropriate form
-                    file_type = file_data.get('product_info', {}).get('type', 'packaging')
-                    
-                    # Create manual validation form
-                    with st.form(key=f"manual_{filename}"):
-                        form_data = create_manual_validation_form(file_type, filename)
-                        
-                        if st.form_submit_button("Submit Review", type="primary"):
-                            # Validate and store results
-                            manual_results = validate_manual_input(form_data, file_type)
-                            
-                            # Update results
-                            if filename not in st.session_state.manual_reviews:
-                                st.session_state.manual_reviews[filename] = {}
-                            
-                            st.session_state.manual_reviews[filename] = manual_results
-                            st.session_state.validation_results[filename]['manual'] = manual_results
-                            st.success("✅ Manual review saved!")
-                            st.rerun()
-        
-        # Display all results
-        st.markdown("### 📋 All Results")
-        
-        # Summary metrics
-        total_files = len(st.session_state.validation_results)
-        approved_count = 0
-        
-        for r in st.session_state.validation_results.values():
-            if isinstance(r, dict):
-                for p in ['claude', 'openai', 'manual']:
-                    if p in r and isinstance(r[p], dict) and r[p].get('overall_assessment') == 'APPROVED':
-                        approved_count += 1
-                        break
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Files", total_files)
-        with col2:
-            st.metric("Approved", approved_count)
-        with col3:
-            st.metric("Issues", total_files - approved_count)
-        
-        # Individual file results
-        for filename, file_results in st.session_state.validation_results.items():
-            if not isinstance(file_results, dict):
-                continue
-                
-            with st.expander(f"📄 {filename}", expanded=True):
-                # Product info card
-                product_info = file_results.get('product_info', {})
-                
-                st.markdown(f"""
-                <div class="product-card">
-                    <strong>Product:</strong> {product_info.get('product', 'unknown').replace('_', ' ').title()}<br>
-                    <strong>Type:</strong> {product_info.get('type', 'unknown')}<br>
-                    <strong>Color:</strong> {product_info.get('color', 'unknown')}<br>
-                    <strong>PDF Info:</strong> {file_results.get('pages', 0)} pages
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Display results from different sources
-                displayed_any = False
-                
-                # AI results
-                if 'claude' in file_results and file_results['claude'] is not None:
-                    st.markdown("#### 🤖 Claude Validation")
-                    display_vive_validation_results(file_results['claude'], 'Claude', filename)
-                    displayed_any = True
-                
-                if 'openai' in file_results and file_results['openai'] is not None:
-                    if displayed_any:
-                        st.markdown("---")
-                    st.markdown("#### 🤖 OpenAI Validation")
-                    display_vive_validation_results(file_results['openai'], 'OpenAI', filename)
-                    displayed_any = True
-                
-                # Manual results
-                if 'manual' in file_results:
-                    if displayed_any:
-                        st.markdown("---")
-                    st.markdown("#### 📝 Manual Review")
-                    display_vive_validation_results(file_results['manual'], 'Manual', filename)
-                    displayed_any = True
-                
-                if not displayed_any:
-                    st.info("No validation results available. Please complete manual review above.")
-        
-        # Export options
-        st.markdown("### 💾 Export Results")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # JSON export
-            try:
+            with col1:
+                # JSON export
                 export_data = {
                     'timestamp': datetime.now().isoformat(),
                     'company': 'Vive Health',
-                    'providers': st.session_state.ai_providers,
-                    'results': {}
+                    'total_files': len(st.session_state.validation_results),
+                    'cross_validation': st.session_state.cross_validator.validate_consistency(),
+                    'results': st.session_state.validation_results
                 }
                 
-                # Clean results for JSON serialization
-                for filename, file_results in st.session_state.validation_results.items():
-                    if isinstance(file_results, dict):
-                        export_data['results'][filename] = file_results
-                
                 st.download_button(
-                    label="📥 Download JSON Report",
+                    "📄 Download JSON Report",
                     data=json.dumps(export_data, indent=2, default=str),
                     file_name=f"vive_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
+                    mime="application/json",
+                    use_container_width=True
                 )
-            except Exception as e:
-                st.error(f"Error generating JSON export: {str(e)}")
-        
-        with col2:
+            
+            with col2:
+                # Excel export
+                if st.button("📊 Generate Excel Report", use_container_width=True):
+                    st.info("Excel export coming soon!")
+            
+            with col3:
+                # PDF report
+                if st.button("📑 Generate PDF Report", use_container_width=True):
+                    st.info("PDF export coming soon!")
+            
             # Summary report
-            summary = generate_vive_summary_report(st.session_state.validation_results)
+            st.markdown("### 📝 Executive Summary")
+            
+            summary = []
+            summary.append("VIVE HEALTH PACKAGING VALIDATION REPORT")
+            summary.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            summary.append("=" * 60)
+            
+            # Add insights
+            insights = st.session_state.cross_validator.validate_consistency()
+            critical_issues = [i for i in insights if i['severity'] == 'error']
+            
+            summary.append(f"\nFILES ANALYZED: {len(st.session_state.validation_results)}")
+            summary.append(f"CRITICAL ISSUES: {len(critical_issues)}")
+            summary.append(f"PRODUCTS FOUND: {len(st.session_state.cross_validator.product_groups)}")
+            
+            summary_text = "\n".join(summary)
+            
+            st.text_area("Report Preview", summary_text, height=300)
             
             st.download_button(
-                label="📥 Download Summary Report",
-                data=summary,
+                "📥 Download Summary",
+                data=summary_text,
                 file_name=f"vive_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                 mime="text/plain"
             )
+        else:
+            st.info("Upload and validate files to enable export options")
 
 if __name__ == "__main__":
     main()
