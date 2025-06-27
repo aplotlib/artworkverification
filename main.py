@@ -1,6 +1,6 @@
 """
-packaging_validator_fixed.py - Fixed AI-powered packaging and label validator
-Resolves duplicate key error and improves overall stability
+packaging_validator_enhanced.py - Enhanced AI-powered packaging and label validator
+Optimized for Vive Health wheelchair bag and medical device packaging validation
 """
 
 import streamlit as st
@@ -27,24 +27,22 @@ except ImportError:
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARNING,  # Set root logger to WARNING to reduce noise
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Our logger stays at INFO level
+logger.setLevel(logging.INFO)
 
-# Suppress debug messages for PDF internals
+# Suppress debug messages
 logging.getLogger('PyPDF2').setLevel(logging.WARNING)
 logging.getLogger('pdfplumber').setLevel(logging.WARNING)
-logging.getLogger('PIL').setLevel(logging.WARNING)  # Also suppress PIL warnings if present
+logging.getLogger('PIL').setLevel(logging.WARNING)
 
 # Page config
 st.set_page_config(
-    page_title="AI Packaging Validator",
-    page_icon="🤖",
+    page_title="Vive Health Packaging Validator",
+    page_icon="🏥",
     layout="wide"
 )
 
@@ -94,69 +92,76 @@ except ImportError:
     EASYOCR_AVAILABLE = False
     logger.warning("EasyOCR not available")
 
-# Validation checklist from the document
-VALIDATION_CHECKLIST = {
+# Vive Health specific validation rules
+VIVE_PRODUCTS = {
+    "wheelchair_bag": {
+        "variants": ["BLACK", "PURPLE FLORAL"],
+        "sku_prefix": "LVA3100",
+        "required_text": ["Vive", "Wheelchair Bag Advanced", "Made in China"],
+        "materials": ["60% Polyester", "20% PVC", "20% LDPE"],
+        "care_instructions": ["Machine wash", "Wash cold", "Air dry", "Do not tumble dry"]
+    }
+}
+
+# Enhanced validation checklist for Vive Health products
+VIVE_VALIDATION_CHECKLIST = {
     "Packaging Artwork": [
-        "Product name is consistent across all artwork",
-        "No misspelled words in content",
-        "Origin is 'Made in China' by default",
-        "Color identifier and size match SKU suffix (e.g., Beige-Small = SUP1030BGES)",
-        "UDI Giftbox/UPC barcode is present and matches UPC serial",
-        "Color code information is present"
+        "Vive brand logo is present and correct",
+        "Product name matches SKU (Wheelchair Bag Advanced)",
+        "Color variant matches filename and content",
+        "Made in China is clearly displayed",
+        "Barcode/UPC is present and readable",
+        "SKU format is correct (LVA3100XX for wheelchair bag)",
+        "Website URL is vivehealth.com",
+        "Social media handles are correct",
+        "California Proposition 65 warning if required",
+        "Distributed by information is present"
     ],
-    "Manual Artwork": [
-        "Product name is consistent across artwork",
-        "No misspelled words in content"
+    "Wash Tag/Care Label": [
+        "Material composition is correct (60% Polyester, 20% PVC, 20% LDPE)",
+        "Made in China is present",
+        "Care instructions are complete and correct",
+        "Temperature range specified (65°F to 85°F)",
+        "All required care symbols are present"
     ],
-    "Washtag/Logo tag": [
-        "Logo is present",
-        "Washtag has care icons"
-    ],
-    "Made in China sticker": [
-        "All products have Made in China sticker (unless rating label or washtag present)"
-    ],
-    "Shipping Mark": [
-        "Format is SKU - QTY",
-        "QR Code matches the SKU - QTY information"
-    ],
-    "Product QR Code": [
-        "QR Code matches the SKU - QTY info"
-    ],
-    "Thank You Card": [
-        "Thank you card needed for all Vive brand products"
+    "Quick Start Guide": [
+        "Vive logo is present",
+        "Product name is consistent",
+        "SKU (LVA3100) is displayed",
+        "Website URL is correct (vhealth.link/fxv)",
+        "Application instructions are clear",
+        "Care instructions match wash tag",
+        "Warranty information is included",
+        "Contact information is accurate"
     ]
 }
 
-# Common issues to check
-COMMON_ISSUES = {
-    "origin_errors": [
-        "Made in Taiwan",
-        "Made in Vietnam", 
-        "Product of Taiwan"
+# Common issues specific to Vive Health
+VIVE_COMMON_ISSUES = {
+    "branding_errors": [
+        ("vive health", "Vive Health"),  # Incorrect capitalization
+        ("VIVE HEALTH", "Vive Health"),  # All caps
+        ("Vive", "vive®"),  # Missing trademark
+    ],
+    "url_errors": [
+        ("vivehealth.com", "www.vivehealth.com"),
+        ("vhealth.link", "vhealth.link/fxv"),
     ],
     "required_elements": [
         "Vive",
-        "Vive Health",
-        "vivehealth.com"
-    ],
-    "spelling_errors": [
-        ("recieve", "receive"),
-        ("occured", "occurred"),
-        ("seperate", "separate"),
-        ("definately", "definitely"),
-        ("managment", "management"),
-        ("accomodate", "accommodate"),
-        ("occassion", "occasion"),
-        ("neccessary", "necessary")
+        "vive®",
+        "Made in China",
+        "1-800-487-3808",
+        "service@vivehealth.com"
     ]
 }
 
 def inject_css():
-    """Inject CSS styling"""
+    """Inject enhanced CSS styling for Vive Health branding"""
     st.markdown("""
     <style>
         .main-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #55c4cf 0%, #3ba0a8 100%);
             padding: 2.5rem;
             border-radius: 12px;
             color: white;
@@ -165,16 +170,18 @@ def inject_css():
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         
-        .debug-box {
-            background: #f0f0f0;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+        .vive-logo {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+        
+        .product-card {
+            background: #f8f9fa;
+            border: 2px solid #55c4cf;
+            border-radius: 8px;
             padding: 1rem;
-            margin: 1rem 0;
-            font-family: monospace;
-            font-size: 0.85rem;
-            max-height: 300px;
-            overflow-y: auto;
+            margin: 0.5rem 0;
         }
         
         .validation-result {
@@ -232,23 +239,25 @@ def inject_css():
             color: #856404;
         }
         
-        .provider-badge {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.875rem;
-            font-weight: 500;
-            margin-right: 0.5rem;
+        .debug-box {
+            background: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+            font-family: monospace;
+            font-size: 0.85rem;
+            max-height: 300px;
+            overflow-y: auto;
         }
         
-        .claude-badge {
-            background: #f3e5ff;
-            color: #6b46c1;
-        }
-        
-        .openai-badge {
-            background: #e5f6ff;
-            color: #0066cc;
+        .ocr-status {
+            background: #e3f2fd;
+            border: 1px solid #1976d2;
+            border-radius: 4px;
+            padding: 0.75rem;
+            margin: 0.5rem 0;
+            color: #0d47a1;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -259,7 +268,6 @@ def get_api_keys():
     
     try:
         if hasattr(st, 'secrets'):
-            # Check for various key names
             for key_name in ['OPENAI_API_KEY', 'openai_api_key', 'openai']:
                 if key_name in st.secrets:
                     keys['openai'] = st.secrets[key_name]
@@ -272,7 +280,6 @@ def get_api_keys():
     except:
         pass
     
-    # Fallback to environment
     if 'openai' not in keys:
         keys['openai'] = os.getenv('OPENAI_API_KEY')
     if 'claude' not in keys:
@@ -280,166 +287,171 @@ def get_api_keys():
     
     return {k: v for k, v in keys.items() if v}
 
-def extract_text_from_pdf(file_bytes, use_ocr=False):
-    """Extract text from PDF using multiple methods
-    Returns: tuple (extracted_text, method_used)
-    """
-    extracted_text = ""
-    method_used = ""
-    
-    # First, analyze the PDF content
-    file_bytes.seek(0)
-    pdf_info = check_pdf_content_type(file_bytes)
-    
-    # Log what we found
-    logger.info(f"PDF type detected: {pdf_info['pdf_type']} - Pages: {pdf_info['num_pages']}, Images: {pdf_info['image_count']}, Text chars: {pdf_info['text_length']}")
-    
-    # If it's empty, return immediately
-    if pdf_info['pdf_type'] == 'empty' and pdf_info['num_pages'] == 0:
-        return "[Empty PDF - no pages found]", "error"
-    
-    # Try text extraction if there's text or mixed content
-    if pdf_info['has_text'] or pdf_info['pdf_type'] == 'mixed':
-        # Method 1: Try pdfplumber first (best for complex layouts)
-        if PDFPLUMBER_AVAILABLE:
-            try:
-                import pdfplumber
-                file_bytes.seek(0)
-                with pdfplumber.open(file_bytes) as pdf:
-                    for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            extracted_text += page_text + "\n"
-                
-                if extracted_text.strip():
-                    method_used = "pdfplumber"
-                    logger.info(f"Successfully extracted text using pdfplumber: {len(extracted_text)} chars")
-            except Exception as e:
-                logger.warning(f"pdfplumber extraction failed: {e}")
-        
-        # Method 2: Try PyMuPDF if pdfplumber didn't work
-        if not extracted_text.strip() and PYMUPDF_AVAILABLE:
-            try:
-                import fitz
-                file_bytes.seek(0)
-                pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
-                file_bytes.seek(0)
-                
-                for page_num in range(len(pdf_document)):
-                    page = pdf_document[page_num]
-                    page_text = page.get_text()
-                    if page_text:
-                        extracted_text += page_text + "\n"
-                
-                pdf_document.close()
-                
-                if extracted_text.strip():
-                    method_used = "PyMuPDF"
-                    logger.info(f"Successfully extracted text using PyMuPDF: {len(extracted_text)} chars")
-            except Exception as e:
-                logger.warning(f"PyMuPDF extraction failed: {e}")
-        
-        # Method 3: Fall back to PyPDF2
-        if not extracted_text.strip():
-            try:
-                file_bytes.seek(0)
-                pdf_reader = PyPDF2.PdfReader(file_bytes)
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    page_text = page.extract_text()
-                    
-                    if page_text:
-                        extracted_text += page_text + "\n"
-                
-                if extracted_text.strip():
-                    method_used = "PyPDF2"
-                    logger.info(f"Successfully extracted text using PyPDF2: {len(extracted_text)} chars")
-            except Exception as e:
-                logger.warning(f"PyPDF2 extraction failed: {e}")
-    
-    # Clean up extracted text if we got any
-    if extracted_text.strip():
-        # Remove excessive whitespace
-        extracted_text = re.sub(r'\s+', ' ', extracted_text)
-        # Remove zero-width characters
-        extracted_text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', extracted_text)
-        # Remove excessive newlines
-        extracted_text = re.sub(r'\n+', '\n', extracted_text)
-        
-        clean_text = extracted_text.strip()
-        logger.info(f"Text successfully extracted using {method_used}: {len(clean_text)} chars")
-        return clean_text, method_used
-    
-    # If no text was extracted and it's image-based, try OCR if enabled
-    if pdf_info['pdf_type'] == 'image-based' and use_ocr:
-        logger.info("Attempting OCR on image-based PDF...")
-        file_bytes.seek(0)
-        return extract_text_with_ocr(file_bytes)
-    
-    # Return appropriate message based on PDF type
-    if pdf_info['pdf_type'] == 'image-based':
-        return f"[Image-based PDF detected - {pdf_info['num_pages']} pages with {pdf_info['image_count']} images. Enable OCR to extract text]", "error"
-    elif pdf_info['pdf_type'] == 'empty':
-        return f"[Empty PDF - {pdf_info['num_pages']} pages but no content found]", "error"
-    else:
-        return f"[No text could be extracted from PDF - {pdf_info['num_pages']} pages analyzed]", "error"
-
-def extract_file_info(filename):
-    """Extract product and variant info from filename"""
-    info = {
-        'product': '',
+def detect_vive_product_type(filename, text=""):
+    """Detect specific Vive Health product type from filename and content"""
+    product_info = {
+        'product': 'unknown',
         'variant': '',
         'color': '',
-        'type': ''
+        'type': '',
+        'sku_detected': ''
     }
     
     name_lower = filename.lower()
-    name_parts = name_lower.replace('_', ' ').replace('-', ' ').split()
+    text_lower = text.lower() if text else ""
     
-    # Identify file type
-    file_types = ['packaging', 'label', 'tag', 'manual', 'quickstart', 'shipping', 'washtag', 'giftbox']
-    for ft in file_types:
-        if ft in name_lower:
-            info['type'] = ft
-            break
+    # Detect wheelchair bag
+    if 'wheelchair' in name_lower or 'lva3100' in text_lower:
+        product_info['product'] = 'wheelchair_bag'
+        
+        # Detect color variant
+        if 'black' in name_lower or 'black' in text_lower:
+            product_info['color'] = 'BLACK'
+            product_info['variant'] = 'BLACK'
+            product_info['sku_detected'] = 'LVA3100BLK'
+        elif 'purple' in name_lower or 'floral' in name_lower or 'purple floral' in text_lower:
+            product_info['color'] = 'PURPLE FLORAL'
+            product_info['variant'] = 'PURPLE FLORAL'
+            product_info['sku_detected'] = 'LVA3100PUR'
     
-    # Extract color
-    colors = ['black', 'white', 'blue', 'red', 'purple', 'grey', 'gray', 'beige', 'floral']
-    for color in colors:
-        if color in name_lower:
-            info['color'] = color
-            break
+    # Detect file type
+    if 'packaging' in name_lower or 'package' in name_lower:
+        product_info['type'] = 'packaging'
+    elif 'wash' in name_lower or 'tag' in name_lower or 'label' in name_lower:
+        product_info['type'] = 'washtag'
+    elif 'quick' in name_lower or 'guide' in name_lower or 'manual' in name_lower:
+        product_info['type'] = 'quickstart'
+    elif 'qc' in name_lower:
+        product_info['type'] = 'qc_sheet'
     
-    # Extract product
-    product_parts = []
-    skip_words = colors + file_types + ['pdf', 'png', 'jpg', 'jpeg', 'advanced']
-    for part in name_parts:
-        if part not in skip_words and len(part) > 2:
-            product_parts.append(part)
-    
-    info['product'] = ' '.join(product_parts[:3])
-    
-    return info
+    return product_info
 
+def extract_text_from_pdf_enhanced(file_bytes, filename="", use_ocr=False):
+    """Enhanced PDF text extraction with better handling for packaging files"""
+    extracted_text = ""
+    method_used = ""
+    extraction_details = {
+        'pages': 0,
+        'images': 0,
+        'text_chars': 0,
+        'extraction_method': '',
+        'is_image_based': False
+    }
+    
+    try:
+        # First analyze PDF structure
+        file_bytes.seek(0)
+        pdf_info = check_pdf_content_type(file_bytes)
+        extraction_details.update(pdf_info)
+        
+        logger.info(f"Analyzing {filename}: {pdf_info['pdf_type']} - Pages: {pdf_info['num_pages']}, Images: {pdf_info['image_count']}, Text: {pdf_info['text_length']} chars")
+        
+        # If empty PDF
+        if pdf_info['num_pages'] == 0:
+            return "[Empty PDF - no pages found]", "error", extraction_details
+        
+        # Try text extraction methods
+        if pdf_info['has_text'] or pdf_info['pdf_type'] == 'mixed':
+            # Try pdfplumber first
+            if PDFPLUMBER_AVAILABLE:
+                try:
+                    import pdfplumber
+                    file_bytes.seek(0)
+                    with pdfplumber.open(file_bytes) as pdf:
+                        for page in pdf.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                extracted_text += page_text + "\n"
+                    
+                    if extracted_text.strip():
+                        method_used = "pdfplumber"
+                        extraction_details['extraction_method'] = method_used
+                        extraction_details['text_chars'] = len(extracted_text)
+                except Exception as e:
+                    logger.warning(f"pdfplumber failed: {e}")
+            
+            # Try PyMuPDF if needed
+            if not extracted_text.strip() and PYMUPDF_AVAILABLE:
+                try:
+                    import fitz
+                    file_bytes.seek(0)
+                    pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
+                    file_bytes.seek(0)
+                    
+                    for page_num in range(len(pdf_document)):
+                        page = pdf_document[page_num]
+                        page_text = page.get_text()
+                        if page_text:
+                            extracted_text += page_text + "\n"
+                    
+                    pdf_document.close()
+                    
+                    if extracted_text.strip():
+                        method_used = "PyMuPDF"
+                        extraction_details['extraction_method'] = method_used
+                        extraction_details['text_chars'] = len(extracted_text)
+                except Exception as e:
+                    logger.warning(f"PyMuPDF failed: {e}")
+            
+            # Fall back to PyPDF2
+            if not extracted_text.strip():
+                try:
+                    file_bytes.seek(0)
+                    pdf_reader = PyPDF2.PdfReader(file_bytes)
+                    for page in pdf_reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            extracted_text += page_text + "\n"
+                    
+                    if extracted_text.strip():
+                        method_used = "PyPDF2"
+                        extraction_details['extraction_method'] = method_used
+                        extraction_details['text_chars'] = len(extracted_text)
+                except Exception as e:
+                    logger.warning(f"PyPDF2 failed: {e}")
+        
+        # Clean extracted text
+        if extracted_text.strip():
+            extracted_text = re.sub(r'\s+', ' ', extracted_text)
+            extracted_text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', extracted_text)
+            return extracted_text.strip(), method_used, extraction_details
+        
+        # If no text extracted and it's image-based, try OCR
+        if pdf_info['pdf_type'] == 'image-based' and use_ocr:
+            logger.info(f"Attempting OCR on {filename}...")
+            file_bytes.seek(0)
+            ocr_text, ocr_method = extract_text_with_ocr_enhanced(file_bytes, filename)
+            if ocr_text and not ocr_text.startswith("["):
+                extraction_details['extraction_method'] = ocr_method
+                extraction_details['text_chars'] = len(ocr_text)
+                return ocr_text, ocr_method, extraction_details
+        
+        # Return appropriate message
+        if pdf_info['pdf_type'] == 'image-based':
+            extraction_details['is_image_based'] = True
+            return f"[Image-based PDF - {pdf_info['num_pages']} pages, {pdf_info['image_count']} images. Enable OCR to extract text]", "image-based", extraction_details
+        else:
+            return f"[No text extracted - {pdf_info['num_pages']} pages analyzed]", "no-text", extraction_details
+            
+    except Exception as e:
+        logger.error(f"PDF extraction error: {e}")
+        return f"[Extraction error: {str(e)}]", "error", extraction_details
 
 def check_pdf_content_type(file_bytes):
-    """
-    Analyze PDF to determine its content type
-    Returns: dict with content analysis
-    """
+    """Analyze PDF to determine its content type"""
     result = {
         'has_text': False,
         'has_images': False,
         'num_pages': 0,
         'image_count': 0,
         'text_length': 0,
-        'pdf_type': 'empty'  # empty, text-based, image-based, mixed
+        'pdf_type': 'empty'
     }
     
     try:
         file_bytes.seek(0)
         
-        # First check with PyMuPDF if available (best for image detection)
+        # Check with PyMuPDF if available
         if PYMUPDF_AVAILABLE:
             try:
                 import fitz
@@ -449,62 +461,42 @@ def check_pdf_content_type(file_bytes):
                 result['num_pages'] = len(doc)
                 
                 for page in doc:
-                    # Check for text
                     text = page.get_text()
                     if text and text.strip():
                         result['has_text'] = True
                         result['text_length'] += len(text)
                     
-                    # Check for images
                     image_list = page.get_images()
                     if image_list:
                         result['has_images'] = True
                         result['image_count'] += len(image_list)
                 
                 doc.close()
-                
             except Exception as e:
-                logger.debug(f"PyMuPDF content check failed: {e}")
+                logger.debug(f"PyMuPDF check failed: {e}")
         
-        # Fallback to PyPDF2 if PyMuPDF didn't work
+        # Fallback to PyPDF2
         if not result['has_images'] and not result['has_text']:
             try:
                 pdf_reader = PyPDF2.PdfReader(file_bytes)
                 result['num_pages'] = len(pdf_reader.pages)
                 
                 for page in pdf_reader.pages:
-                    # Check for text
                     text = page.extract_text()
                     if text and text.strip():
                         result['has_text'] = True
                         result['text_length'] += len(text)
                     
-                    # Check for images in resources
-                    if '/Resources' in page:
-                        resources = page['/Resources']
-                        if hasattr(resources, 'get_object'):
-                            resources = resources.get_object()
-                        
-                        if isinstance(resources, dict) and '/XObject' in resources:
-                            xobject = resources['/XObject']
-                            if hasattr(xobject, 'get_object'):
-                                xobject = xobject.get_object()
-                            
-                            if isinstance(xobject, dict):
-                                for obj_name in xobject:
-                                    try:
-                                        obj = xobject[obj_name]
-                                        if hasattr(obj, 'get_object'):
-                                            obj = obj.get_object()
-                                        
-                                        if isinstance(obj, dict) and obj.get('/Subtype') == '/Image':
-                                            result['has_images'] = True
-                                            result['image_count'] += 1
-                                    except:
-                                        continue
-            
-            except Exception as e:
-                logger.debug(f"PyPDF2 content check failed: {e}")
+                    # Check for images
+                    if '/Resources' in page and '/XObject' in page['/Resources']:
+                        xobject = page['/Resources']['/XObject'].get_object()
+                        if xobject:
+                            for obj in xobject:
+                                if xobject[obj]['/Subtype'] == '/Image':
+                                    result['has_images'] = True
+                                    result['image_count'] += 1
+            except:
+                pass
         
         # Determine PDF type
         if result['has_text'] and result['has_images']:
@@ -513,23 +505,14 @@ def check_pdf_content_type(file_bytes):
             result['pdf_type'] = 'text-based'
         elif result['has_images']:
             result['pdf_type'] = 'image-based'
-        else:
-            result['pdf_type'] = 'empty'
-        
-        logger.info(f"PDF analysis: {result['pdf_type']} ({result['num_pages']} pages, {result['text_length']} chars text, {result['image_count']} images)")
         
     except Exception as e:
-        logger.error(f"PDF content analysis failed: {e}")
+        logger.error(f"PDF analysis failed: {e}")
     
     return result
 
-
-def extract_text_with_ocr(file_bytes, page_limit=5):
-    """
-    Extract text from image-based PDF using OCR
-    """
-    extracted_text = ""
-    
+def extract_text_with_ocr_enhanced(file_bytes, filename="", page_limit=5):
+    """Enhanced OCR extraction with progress feedback"""
     if not PYMUPDF_AVAILABLE:
         return "[OCR requires PyMuPDF library]", "error"
     
@@ -541,32 +524,39 @@ def extract_text_with_ocr(file_bytes, page_limit=5):
         doc = fitz.open(stream=file_bytes.read(), filetype="pdf")
         file_bytes.seek(0)
         
+        extracted_text = ""
         pages_to_process = min(len(doc), page_limit)
         
+        # Create progress placeholder
+        progress_placeholder = st.empty()
+        
         for page_num in range(pages_to_process):
+            progress_placeholder.info(f"🔍 OCR Processing page {page_num + 1}/{pages_to_process} of {filename}...")
+            
             page = doc[page_num]
             
-            # Convert page to image
-            mat = fitz.Matrix(2, 2)  # 2x zoom for better OCR
+            # Convert page to image with higher resolution
+            mat = fitz.Matrix(3, 3)  # 3x zoom for better OCR
             pix = page.get_pixmap(matrix=mat)
             img_data = pix.pil_tobytes(format="PNG")
             img = Image.open(io.BytesIO(img_data))
             
-            # OCR the image
+            # Try OCR
             page_text = ""
             
             if TESSERACT_AVAILABLE:
                 try:
                     import pytesseract
-                    page_text = pytesseract.image_to_string(img)
+                    # Configure Tesseract for better results
+                    custom_config = r'--oem 3 --psm 6'
+                    page_text = pytesseract.image_to_string(img, config=custom_config)
                     if page_text.strip():
                         extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
                 except Exception as e:
-                    logger.warning(f"Tesseract OCR failed: {e}")
+                    logger.warning(f"Tesseract failed on page {page_num + 1}: {e}")
             
             elif EASYOCR_AVAILABLE:
                 try:
-                    # Initialize reader (this is slow, consider caching)
                     import easyocr
                     reader = easyocr.Reader(['en'])
                     results = reader.readtext(img_data)
@@ -577,204 +567,138 @@ def extract_text_with_ocr(file_bytes, page_limit=5):
                     logger.warning(f"EasyOCR failed: {e}")
         
         doc.close()
+        progress_placeholder.empty()
         
         if extracted_text.strip():
             return extracted_text.strip(), "OCR"
         else:
-            return "[OCR completed but no text found in images]", "error"
+            return "[OCR completed but no text found]", "ocr-no-text"
             
     except Exception as e:
-        logger.error(f"OCR extraction failed: {e}")
-        return f"[OCR failed: {str(e)}]", "error"
+        logger.error(f"OCR failed: {e}")
+        return f"[OCR error: {str(e)}]", "error"
 
-def create_ai_prompt(text, filename, file_info, checklist_items):
-    """Create comprehensive prompt for AI validation"""
-    # Don't send error messages to AI
-    if not text or (text.startswith("[") and text.endswith("]")):
+def create_vive_specific_prompt(text, filename, product_info, checklist_items):
+    """Create Vive Health specific validation prompt"""
+    if not text or text.startswith("["):
         return None
-        
-    # Don't process if text is too short
-    if len(text.strip()) < 10:
-        return None
-        
-    prompt = f"""You are a quality control expert reviewing packaging and label files for Vive Health medical devices.
+    
+    prompt = f"""You are a quality control expert for Vive Health medical devices, specifically reviewing packaging files for the Wheelchair Bag Advanced product line.
+
+COMPANY STANDARDS:
+- Brand: Vive Health (registered trademark: vive®)
+- Website: vivehealth.com
+- Support: 1-800-487-3808
+- Email: service@vivehealth.com
+- All products MUST say "Made in China"
 
 FILE INFORMATION:
 - Filename: {filename}
-- Product: {file_info['product']}
-- Type: {file_info['type']}
-- Color variant: {file_info['color']}
+- Product: {product_info.get('product', 'unknown')} 
+- Type: {product_info.get('type', 'unknown')}
+- Color variant: {product_info.get('color', 'unknown')}
+- Expected SKU: {product_info.get('sku_detected', 'unknown')}
 
-EXTRACTED TEXT (first 2000 chars):
-{text[:2000]}
+EXTRACTED TEXT (first 3000 chars):
+{text[:3000]}
+
+SPECIFIC VALIDATION REQUIREMENTS:
+1. For Wheelchair Bag Advanced:
+   - SKU format: LVA3100XXX (BLK for Black, PUR for Purple Floral)
+   - Materials MUST be: 60% Polyester, 20% PVC, 20% LDPE
+   - Temperature range: 65°F to 85°F
+   - Must include warranty information (1 year)
+
+2. Critical checks:
+   - Origin MUST be "Made in China" (not Taiwan, Vietnam, etc.)
+   - Vive or vive® branding must be present
+   - Website URL must be exact: vivehealth.com or vhealth.link/fxv
+   - California Prop 65 warning if applicable
 
 VALIDATION CHECKLIST:
 {json.dumps(checklist_items, indent=2)}
 
-CRITICAL REQUIREMENTS:
-1. Origin MUST be "Made in China" (not Taiwan, Vietnam, etc.)
-2. Vive Health branding must be present
-3. Color in content must match filename color variant
-4. SKU format should be XXX####-COLOR (e.g., SUP1030BGES for Beige-Small)
-5. No spelling errors
-6. Product name consistency
-
-IMPORTANT: You must respond with a valid JSON object with this exact structure:
+RESPONSE FORMAT - You must respond with valid JSON:
 {{
     "overall_assessment": "APPROVED" or "NEEDS_REVISION" or "REVIEW_REQUIRED",
+    "product_identified": "wheelchair_bag" or "unknown",
+    "color_variant": "BLACK" or "PURPLE FLORAL" or "unknown",
     "checklist_validation": {{
         "item_name": {{
             "status": "PASS" or "FAIL" or "UNSURE",
-            "explanation": "brief explanation"
+            "explanation": "specific details"
         }}
     }},
     "critical_issues": ["list of critical issues"],
     "warnings": ["list of warnings"],
-    "spelling_errors": ["list of spelling errors found"],
-    "consistency_issues": ["list of consistency issues"]
+    "spelling_errors": ["list of spelling/branding errors"],
+    "missing_elements": ["list of required but missing elements"],
+    "sku_validation": {{
+        "expected": "LVA3100XXX",
+        "found": "actual SKU if found",
+        "correct": true/false
+    }}
 }}
 
-Analyze the file and provide your assessment."""
+Analyze thoroughly and provide detailed feedback."""
 
     return prompt
 
 def parse_ai_response(response_text, provider):
-    """Parse AI response with multiple fallback methods"""
-    logger.info(f"Parsing {provider} response length: {len(response_text)}")
+    """Parse AI response with robust error handling"""
+    logger.info(f"Parsing {provider} response")
     
-    # Initialize default structure
     parsed = {
         'overall_assessment': 'UNKNOWN',
+        'product_identified': 'unknown',
+        'color_variant': 'unknown',
         'checklist_validation': {},
         'critical_issues': [],
         'warnings': [],
         'spelling_errors': [],
-        'consistency_issues': []
+        'missing_elements': [],
+        'sku_validation': {}
     }
     
-    # Method 1: Try direct JSON parsing
     try:
-        # Look for JSON in the response
+        # Extract JSON
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             json_text = json_match.group(0)
-            # Clean up common JSON issues
-            json_text = json_text.replace('\n', ' ').replace('\r', ' ')
             result = json.loads(json_text)
             
-            # Handle different key formats (lowercase, uppercase, with/without underscores)
-            for key in ['overall_assessment', 'overallAssessment', 'OVERALL_ASSESSMENT', 'overall']:
+            # Map fields
+            for key in parsed.keys():
                 if key in result:
-                    parsed['overall_assessment'] = str(result[key]).upper().replace(' ', '_')
-                    break
+                    parsed[key] = result[key]
             
-            for key in ['checklist_validation', 'checklistValidation', 'CHECKLIST_VALIDATION', 'checklist']:
-                if key in result:
-                    parsed['checklist_validation'] = result[key]
-                    break
-            
-            for key in ['critical_issues', 'criticalIssues', 'CRITICAL_ISSUES', 'critical']:
-                if key in result:
-                    parsed['critical_issues'] = result[key] if isinstance(result[key], list) else [result[key]]
-                    break
-            
-            for key in ['warnings', 'WARNINGS', 'warning']:
-                if key in result:
-                    parsed['warnings'] = result[key] if isinstance(result[key], list) else [result[key]]
-                    break
-            
-            for key in ['spelling_errors', 'spellingErrors', 'SPELLING_ERRORS', 'spelling']:
-                if key in result:
-                    parsed['spelling_errors'] = result[key] if isinstance(result[key], list) else [result[key]]
-                    break
-            
-            for key in ['consistency_issues', 'consistencyIssues', 'CONSISTENCY_ISSUES', 'consistency']:
-                if key in result:
-                    parsed['consistency_issues'] = result[key] if isinstance(result[key], list) else [result[key]]
-                    break
-            
-            logger.info(f"Successfully parsed JSON from {provider}")
             return parsed
     except Exception as e:
-        logger.warning(f"JSON parsing failed for {provider}: {e}")
+        logger.warning(f"JSON parsing failed: {e}")
     
-    # Method 2: Extract key information using patterns
+    # Fallback pattern extraction
     try:
-        # Extract overall assessment
-        assessment_patterns = [
-            r'overall[_\s]assessment["\s:]+([A-Z_\s]+)',
-            r'"overall_assessment"\s*:\s*"([^"]+)"',
-            r'Assessment:\s*([A-Z_\s]+)',
-            r'(APPROVED|NEEDS[_\s]REVISION|REVIEW[_\s]REQUIRED)'
-        ]
+        # Extract assessment
+        assessment_match = re.search(r'overall[_\s]assessment["\s:]+([A-Z_\s]+)', response_text, re.IGNORECASE)
+        if assessment_match:
+            parsed['overall_assessment'] = assessment_match.group(1).strip().upper().replace(' ', '_')
         
-        for pattern in assessment_patterns:
-            match = re.search(pattern, response_text, re.IGNORECASE)
-            if match:
-                assessment = match.group(1).strip().upper().replace(' ', '_')
-                if assessment in ['APPROVED', 'NEEDS_REVISION', 'REVIEW_REQUIRED']:
-                    parsed['overall_assessment'] = assessment
-                    break
-        
-        # Extract critical issues
-        critical_section = re.search(r'critical[_\s]issues["\s:]+\[(.*?)\]', response_text, re.IGNORECASE | re.DOTALL)
-        if critical_section:
-            issues_text = critical_section.group(1)
-            issues = re.findall(r'"([^"]+)"', issues_text)
+        # Extract issues
+        critical_match = re.search(r'critical[_\s]issues["\s:]+\[(.*?)\]', response_text, re.IGNORECASE | re.DOTALL)
+        if critical_match:
+            issues = re.findall(r'"([^"]+)"', critical_match.group(1))
             parsed['critical_issues'] = issues
-        else:
-            # Try line-based extraction
-            critical_match = re.search(r'critical.*?:(.*?)(?:warnings|spelling|\Z)', response_text, re.IGNORECASE | re.DOTALL)
-            if critical_match:
-                issues = re.findall(r'[-•]\s*(.+)', critical_match.group(1))
-                parsed['critical_issues'] = [issue.strip() for issue in issues]
         
-        # Extract warnings
-        warning_section = re.search(r'warnings["\s:]+\[(.*?)\]', response_text, re.IGNORECASE | re.DOTALL)
-        if warning_section:
-            warnings_text = warning_section.group(1)
-            warnings = re.findall(r'"([^"]+)"', warnings_text)
-            parsed['warnings'] = warnings
-        
-        # Extract checklist items
-        checklist_patterns = [
-            r'([✅❌⚠️])\s*([^:]+):\s*([^\n]+)',
-            r'"([^"]+)":\s*\{\s*"status":\s*"(PASS|FAIL|UNSURE)"[^}]*"explanation":\s*"([^"]+)"',
-            r'(PASS|FAIL|UNSURE):\s*([^:]+):\s*([^\n]+)'
-        ]
-        
-        for pattern in checklist_patterns:
-            matches = re.findall(pattern, response_text)
-            if matches:
-                for match in matches:
-                    if len(match) == 3:
-                        if match[0] in ['✅', '❌', '⚠️']:
-                            status = 'PASS' if '✅' in match[0] else 'FAIL' if '❌' in match[0] else 'UNSURE'
-                            item = match[1].strip()
-                            explanation = match[2].strip()
-                        else:
-                            item = match[1].strip() if match[0] in ['PASS', 'FAIL', 'UNSURE'] else match[0].strip()
-                            status = match[0] if match[0] in ['PASS', 'FAIL', 'UNSURE'] else match[1]
-                            explanation = match[2].strip()
-                        
-                        parsed['checklist_validation'][item] = {
-                            'status': status,
-                            'explanation': explanation
-                        }
-        
-        logger.info(f"Extracted data from {provider} using patterns")
         return parsed
         
     except Exception as e:
-        logger.error(f"Pattern extraction failed for {provider}: {e}")
+        logger.error(f"Pattern extraction failed: {e}")
     
-    # Method 3: Return with error info
-    parsed['error'] = f"Failed to parse {provider} response completely"
-    parsed['raw_response'] = response_text[:1000]
+    parsed['error'] = f"Failed to parse {provider} response"
     return parsed
 
 def call_claude(prompt, api_key):
-    """Call Claude API with better error handling"""
+    """Call Claude API"""
     if not CLAUDE_AVAILABLE or not api_key:
         return None
     
@@ -785,22 +709,18 @@ def call_claude(prompt, api_key):
             model="claude-3-haiku-20240307",
             max_tokens=2000,
             temperature=0.1,
-            system="You are a quality control expert. Always respond with valid JSON only, no additional text.",
+            system="You are a quality control expert for Vive Health. Always respond with valid JSON only.",
             messages=[{"role": "user", "content": prompt}]
         )
         
-        response_text = response.content[0].text
-        logger.info(f"Claude raw response: {response_text[:200]}...")
-        
-        # Parse the response
-        return parse_ai_response(response_text, 'Claude')
+        return parse_ai_response(response.content[0].text, 'Claude')
             
     except Exception as e:
-        logger.error(f"Claude API error: {e}")
+        logger.error(f"Claude error: {e}")
         return {"error": str(e), "overall_assessment": "ERROR"}
 
 def call_openai(prompt, api_key):
-    """Call OpenAI API with better error handling"""
+    """Call OpenAI API"""
     if not OPENAI_AVAILABLE or not api_key:
         return None
     
@@ -810,35 +730,27 @@ def call_openai(prompt, api_key):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a quality control expert. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are a quality control expert for Vive Health. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
             max_tokens=2000
         )
         
-        response_text = response.choices[0].message.content
-        logger.info(f"OpenAI raw response: {response_text[:200]}...")
-        
-        # Parse the response
-        return parse_ai_response(response_text, 'OpenAI')
+        return parse_ai_response(response.choices[0].message.content, 'OpenAI')
             
     except Exception as e:
-        logger.error(f"OpenAI API error: {e}")
+        logger.error(f"OpenAI error: {e}")
         return {"error": str(e), "overall_assessment": "ERROR"}
 
-def display_ai_results(results, provider, file_key="", unique_id=""):
-    """Display AI validation results with better error handling and unique keys"""
+def display_vive_validation_results(results, provider, filename):
+    """Display validation results with Vive Health specific formatting"""
     
-    # Check for errors first
     if "error" in results:
         st.error(f"**{provider} Error:** {results['error']}")
-        if "raw_response" in results:
-            with st.expander("View raw response"):
-                st.text(results['raw_response'])
         return
     
-    # Overall assessment
+    # Overall assessment with color coding
     assessment = results.get('overall_assessment', 'UNKNOWN')
     assessment_color = {
         'APPROVED': 'success',
@@ -848,200 +760,156 @@ def display_ai_results(results, provider, file_key="", unique_id=""):
         'UNKNOWN': 'info'
     }.get(assessment, 'info')
     
-    st.markdown(f'<div class="validation-result {assessment_color}"><strong>Overall Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([2, 1, 1])
     
-    # Debug info in development - use unique key with UUID
-    debug_key = f"debug_{provider}_{file_key}_{unique_id}_{uuid.uuid4().hex[:8]}"
-    if st.checkbox(f"Show {provider} debug info", key=debug_key):
-        st.markdown(f'<div class="debug-box">{json.dumps(results, indent=2)}</div>', unsafe_allow_html=True)
+    with col1:
+        st.markdown(f'<div class="validation-result {assessment_color}"><strong>Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
     
-    # Checklist validation
-    checklist = results.get('checklist_validation', {})
-    if checklist:
-        st.markdown("#### 📋 Checklist Validation")
-        for item, details in checklist.items():
-            if isinstance(details, dict):
-                status = details.get('status', 'UNKNOWN')
-                explanation = details.get('explanation', 'No explanation provided')
-            else:
-                # Handle string or other non-dict values
-                status = 'UNKNOWN'
-                explanation = str(details) if details else 'No details available'
-            
-            # Map status to symbol and class
-            status_symbol = {'PASS': '✅', 'FAIL': '❌', 'UNSURE': '⚠️', 'UNKNOWN': '❓'}.get(status, '❓')
-            status_class = {
-                'PASS': 'checklist-pass', 
-                'FAIL': 'checklist-fail', 
-                'UNSURE': 'checklist-warning',
-                'UNKNOWN': 'checklist-warning'
-            }.get(status, 'checklist-warning')
-            
-            # Clean up item name (remove extra quotes or formatting)
-            item_clean = str(item).strip('"\'')
-            
-            st.markdown(f'<div class="checklist-item {status_class}">{status_symbol} {item_clean}: {explanation}</div>', unsafe_allow_html=True)
-    else:
-        st.info("No checklist validation data available")
+    with col2:
+        product = results.get('product_identified', 'unknown')
+        if product == 'wheelchair_bag':
+            st.success(f"✅ Product: Wheelchair Bag")
+        else:
+            st.warning(f"❓ Product: {product}")
     
-    # Critical issues
+    with col3:
+        color = results.get('color_variant', 'unknown')
+        if color in ['BLACK', 'PURPLE FLORAL']:
+            st.success(f"✅ Color: {color}")
+        else:
+            st.warning(f"❓ Color: {color}")
+    
+    # SKU Validation
+    sku_info = results.get('sku_validation', {})
+    if sku_info:
+        expected = sku_info.get('expected', 'N/A')
+        found = sku_info.get('found', 'Not found')
+        correct = sku_info.get('correct', False)
+        
+        if correct:
+            st.success(f"✅ SKU Correct: {found}")
+        else:
+            st.error(f"❌ SKU Issue - Expected: {expected}, Found: {found}")
+    
+    # Critical Issues
     critical = results.get('critical_issues', [])
     if critical:
         st.markdown("#### 🚨 Critical Issues")
         for issue in critical:
             st.markdown(f'<div class="validation-result error">❌ {issue}</div>', unsafe_allow_html=True)
     
+    # Missing Elements
+    missing = results.get('missing_elements', [])
+    if missing:
+        st.markdown("#### ⚠️ Missing Required Elements")
+        for element in missing:
+            st.markdown(f"- {element}")
+    
+    # Checklist validation
+    checklist = results.get('checklist_validation', {})
+    if checklist:
+        with st.expander("📋 Detailed Checklist Results", expanded=True):
+            for item, details in checklist.items():
+                if isinstance(details, dict):
+                    status = details.get('status', 'UNKNOWN')
+                    explanation = details.get('explanation', '')
+                    
+                    status_symbol = {'PASS': '✅', 'FAIL': '❌', 'UNSURE': '⚠️'}.get(status, '❓')
+                    status_class = {'PASS': 'checklist-pass', 'FAIL': 'checklist-fail', 'UNSURE': 'checklist-warning'}.get(status, 'checklist-warning')
+                    
+                    st.markdown(f'<div class="checklist-item {status_class}">{status_symbol} {item}: {explanation}</div>', unsafe_allow_html=True)
+    
     # Warnings
     warnings = results.get('warnings', [])
     if warnings:
-        st.markdown("#### ⚠️ Warnings")
-        for warning in warnings:
-            st.markdown(f'<div class="validation-result warning">⚠️ {warning}</div>', unsafe_allow_html=True)
-    
-    # Spelling errors
-    spelling = results.get('spelling_errors', [])
-    if spelling:
-        st.markdown("#### 📝 Spelling Errors")
-        for error in spelling:
-            st.markdown(f"- {error}")
-    
-    # Consistency issues
-    consistency = results.get('consistency_issues', [])
-    if consistency:
-        st.markdown("#### 🔄 Consistency Issues")
-        for issue in consistency:
-            st.markdown(f"- {issue}")
+        with st.expander("⚠️ Warnings", expanded=False):
+            for warning in warnings:
+                st.markdown(f"- {warning}")
 
-def generate_summary_report(results):
-    """Generate summary report of all validation results"""
+def generate_vive_summary_report(results):
+    """Generate Vive Health specific summary report"""
     report = []
-    report.append(f"AI PACKAGING VALIDATION REPORT")
+    report.append("VIVE HEALTH PACKAGING VALIDATION REPORT")
     report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report.append("=" * 60)
     report.append("")
     
-    # Count overall results
-    total_files = len(results)
-    approved = 0
-    needs_revision = 0
-    review_required = 0
-    extraction_failed = 0
+    # Count results by product
+    product_summary = defaultdict(lambda: {'total': 0, 'approved': 0, 'needs_revision': 0, 'issues': []})
     
     for filename, file_results in results.items():
-        if file_results.get('extraction_failed', False):
-            extraction_failed += 1
-            continue
-            
+        product = file_results.get('product_info', {}).get('product', 'unknown')
+        product_summary[product]['total'] += 1
+        
         for provider in ['claude', 'openai']:
             if provider in file_results and isinstance(file_results[provider], dict):
                 assessment = file_results[provider].get('overall_assessment', 'UNKNOWN')
                 if assessment == 'APPROVED':
-                    approved += 1
+                    product_summary[product]['approved'] += 1
                 elif assessment == 'NEEDS_REVISION':
-                    needs_revision += 1
-                elif assessment == 'REVIEW_REQUIRED':
-                    review_required += 1
+                    product_summary[product]['needs_revision'] += 1
+                
+                # Collect critical issues
+                critical = file_results[provider].get('critical_issues', [])
+                product_summary[product]['issues'].extend(critical)
     
-    report.append(f"SUMMARY:")
-    report.append(f"Total Files: {total_files}")
-    report.append(f"Approved: {approved}")
-    report.append(f"Needs Revision: {needs_revision}")
-    report.append(f"Review Required: {review_required}")
-    report.append(f"Extraction Failed: {extraction_failed}")
-    report.append("")
-    report.append("=" * 60)
-    report.append("")
+    # Product summary
+    report.append("PRODUCT SUMMARY:")
+    for product, stats in product_summary.items():
+        report.append(f"\n{product.upper().replace('_', ' ')}:")
+        report.append(f"  Total Files: {stats['total']}")
+        report.append(f"  Approved: {stats['approved']}")
+        report.append(f"  Needs Revision: {stats['needs_revision']}")
+        if stats['issues']:
+            report.append(f"  Common Issues:")
+            for issue in set(stats['issues']):
+                report.append(f"    - {issue}")
     
-    # Detailed results per file
+    report.append("\n" + "=" * 60 + "\n")
+    
+    # Detailed file results
+    report.append("DETAILED FILE RESULTS:\n")
+    
     for filename, file_results in results.items():
         report.append(f"FILE: {filename}")
         report.append("-" * 40)
         
-        if file_results.get('extraction_failed', False):
+        product_info = file_results.get('product_info', {})
+        report.append(f"Product: {product_info.get('product', 'unknown')}")
+        report.append(f"Type: {product_info.get('type', 'unknown')}")
+        report.append(f"Color: {product_info.get('color', 'unknown')}")
+        
+        if file_results.get('extraction_failed'):
             report.append(f"STATUS: Text extraction failed")
             report.append(f"REASON: {file_results.get('skip_reason', 'Unknown')}")
-            report.append("")
-            continue
+        else:
+            for provider in ['claude', 'openai']:
+                if provider in file_results and isinstance(file_results[provider], dict):
+                    ai_results = file_results[provider]
+                    report.append(f"\n{provider.upper()} Assessment: {ai_results.get('overall_assessment', 'UNKNOWN')}")
+                    
+                    # SKU validation
+                    sku_info = ai_results.get('sku_validation', {})
+                    if sku_info:
+                        report.append(f"SKU: Expected {sku_info.get('expected', 'N/A')}, Found {sku_info.get('found', 'N/A')}")
+                    
+                    # Critical issues
+                    critical = ai_results.get('critical_issues', [])
+                    if critical:
+                        report.append("\nCritical Issues:")
+                        for issue in critical:
+                            report.append(f"  - {issue}")
+                    
+                    # Missing elements
+                    missing = ai_results.get('missing_elements', [])
+                    if missing:
+                        report.append("\nMissing Elements:")
+                        for element in missing:
+                            report.append(f"  - {element}")
         
-        for provider in ['claude', 'openai']:
-            if provider in file_results and isinstance(file_results[provider], dict):
-                ai_results = file_results[provider]
-                report.append(f"\n{provider.upper()} Assessment: {ai_results.get('overall_assessment', 'UNKNOWN')}")
-                
-                # Critical issues
-                critical = ai_results.get('critical_issues', [])
-                if critical:
-                    report.append("\nCritical Issues:")
-                    for issue in critical:
-                        report.append(f"  - {issue}")
-                
-                # Warnings
-                warnings = ai_results.get('warnings', [])
-                if warnings:
-                    report.append("\nWarnings:")
-                    for warning in warnings:
-                        report.append(f"  - {warning}")
-                
-                # Spelling errors
-                spelling = ai_results.get('spelling_errors', [])
-                if spelling:
-                    report.append("\nSpelling Errors:")
-                    for error in spelling:
-                        report.append(f"  - {error}")
-        
-        report.append("")
-        report.append("=" * 60)
-        report.append("")
+        report.append("\n" + "=" * 60 + "\n")
     
     return "\n".join(report)
-
-def test_ai_connection(api_keys):
-    """Test AI connections with a simple prompt"""
-    st.markdown("### 🧪 Testing AI Connections...")
-    
-    test_prompt = """Respond with this exact JSON:
-{
-    "overall_assessment": "APPROVED",
-    "test": "success"
-}"""
-    
-    results = {}
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if 'claude' in api_keys:
-            with st.spinner("Testing Claude..."):
-                try:
-                    client = anthropic.Anthropic(api_key=api_keys['claude'])
-                    response = client.messages.create(
-                        model="claude-3-haiku-20240307",
-                        max_tokens=100,
-                        messages=[{"role": "user", "content": test_prompt}]
-                    )
-                    st.success("✅ Claude connected!")
-                    results['claude'] = True
-                except Exception as e:
-                    st.error(f"❌ Claude failed: {str(e)[:100]}")
-                    results['claude'] = False
-    
-    with col2:
-        if 'openai' in api_keys:
-            with st.spinner("Testing OpenAI..."):
-                try:
-                    client = openai.OpenAI(api_key=api_keys['openai'])
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[{"role": "user", "content": test_prompt}],
-                        max_tokens=100
-                    )
-                    st.success("✅ OpenAI connected!")
-                    results['openai'] = True
-                except Exception as e:
-                    st.error(f"❌ OpenAI failed: {str(e)[:100]}")
-                    results['openai'] = False
-    
-    return results
 
 def main():
     inject_css()
@@ -1051,16 +919,17 @@ def main():
         st.session_state.validation_results = None
     if 'ai_providers' not in st.session_state:
         st.session_state.ai_providers = []
-    if 'validation_counter' not in st.session_state:
-        st.session_state.validation_counter = 0
     if 'use_ocr' not in st.session_state:
         st.session_state.use_ocr = False
+    if 'ocr_reader' not in st.session_state:
+        st.session_state.ocr_reader = None
     
-    # Header
+    # Header with Vive branding
     st.markdown("""
     <div class="main-header">
-        <h1>🤖 AI-Powered Packaging Validator</h1>
-        <p>Intelligent validation using Claude and OpenAI</p>
+        <div class="vive-logo">vive®</div>
+        <h1>Packaging & Label Validator</h1>
+        <p>AI-powered quality control for Vive Health products</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1069,7 +938,9 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.markdown("### 🤖 AI Providers")
+        st.markdown("### 🏥 Vive Health QC System")
+        
+        st.markdown("#### 🤖 AI Providers")
         
         available_providers = []
         if 'claude' in api_keys and CLAUDE_AVAILABLE:
@@ -1097,25 +968,20 @@ def main():
         
         st.markdown("---")
         
-        # PDF Libraries status
-        st.markdown("### 📄 PDF Libraries")
+        # PDF Libraries
+        st.markdown("#### 📄 PDF Processing")
         
+        pdf_status = []
         if PDFPLUMBER_AVAILABLE:
-            st.success("✅ pdfplumber (best)")
-        else:
-            st.warning("⚠️ pdfplumber not installed")
-        
+            pdf_status.append("✅ pdfplumber")
         if PYMUPDF_AVAILABLE:
-            st.success("✅ PyMuPDF (good)")
-        else:
-            st.warning("⚠️ PyMuPDF not installed")
+            pdf_status.append("✅ PyMuPDF")
+        pdf_status.append("✅ PyPDF2")
         
-        st.success("✅ PyPDF2 (fallback)")
-        
-        st.markdown("---")
+        st.success(" | ".join(pdf_status))
         
         # OCR Options
-        st.markdown("### 🔍 OCR Options")
+        st.markdown("#### 🔍 OCR Options")
         
         ocr_available = False
         if TESSERACT_AVAILABLE:
@@ -1130,108 +996,89 @@ def main():
         else:
             st.info("❌ EasyOCR not installed")
         
-        # OCR toggle
-        use_ocr = False
+        # OCR toggle with auto-enable suggestion
         if ocr_available:
-            use_ocr = st.checkbox("Enable OCR for image-based PDFs", value=st.session_state.get('use_ocr', False), 
-                                help="This will attempt to extract text from images. May be slow for large files.")
+            use_ocr = st.checkbox(
+                "Enable OCR for image PDFs", 
+                value=st.session_state.get('use_ocr', True),
+                help="Recommended for packaging artwork PDFs"
+            )
             st.session_state.use_ocr = use_ocr
+            
+            if use_ocr:
+                st.info("🔍 OCR is enabled - will process image-based PDFs automatically")
         else:
-            st.info("Install pytesseract or easyocr to enable OCR")
-            with st.expander("OCR Setup"):
-                st.markdown("""
-                **Option 1: Tesseract (faster)**
-                ```bash
-                # Install Tesseract
-                sudo apt-get install tesseract-ocr
-                pip install pytesseract pillow
-                ```
-                
-                **Option 2: EasyOCR (easier)**
-                ```bash
-                pip install easyocr pillow
-                ```
-                """)
+            st.warning("⚠️ Install OCR tools to process packaging artwork PDFs")
             st.session_state.use_ocr = False
         
-        with st.expander("PDF Tips"):
+        st.markdown("---")
+        
+        # Product reference
+        st.markdown("### 📦 Product Standards")
+        
+        with st.expander("Wheelchair Bag Advanced"):
             st.markdown("""
-            **For best results:**
-            - Use text-based PDFs (not scanned)
-            - Export from source with text layers
-            - Enable OCR for image-based PDFs
+            **SKUs:**
+            - LVA3100BLK (Black)
+            - LVA3100PUR (Purple Floral)
             
-            **If extraction fails:**
-            - Re-export the PDF
-            - Use Adobe Acrobat's OCR
-            - Enable OCR option above
+            **Materials:**
+            - 60% Polyester
+            - 20% PVC
+            - 20% LDPE
+            
+            **Requirements:**
+            - Made in China
+            - Temperature: 65°F-85°F
+            - 1 year warranty
+            - Website: vivehealth.com
             """)
         
-        st.markdown("---")
-        
-        # Test connections button
-        if st.button("🧪 Test AI Connections"):
-            test_ai_connection(api_keys)
-        
-        st.markdown("---")
-        
-        # Checklist reference
-        st.markdown("### 📋 Validation Checklist")
-        for category, items in VALIDATION_CHECKLIST.items():
-            with st.expander(category, expanded=False):
+        with st.expander("Validation Checklist"):
+            for category, items in VIVE_VALIDATION_CHECKLIST.items():
+                st.markdown(f"**{category}:**")
                 for item in items:
                     st.markdown(f"• {item}")
     
-    # Main content
+    # Main content area
     if not available_providers:
         st.warning("⚠️ Please configure at least one AI provider to use this tool.")
         return
     
-    st.markdown("### 🤖 Select AI Provider(s)")
-    
-    col1, col2, col3 = st.columns(3)
+    # Provider selection
+    col1, col2 = st.columns(2)
     
     providers = []
-    
     with col1:
         if 'claude' in available_providers:
-            use_claude = st.checkbox("**Claude** (Anthropic)", value=True, help="Fast and accurate")
+            use_claude = st.checkbox("**Use Claude AI**", value=True)
             if use_claude:
                 providers.append('claude')
-            st.markdown('<span class="provider-badge claude-badge">Claude 3 Haiku</span>', unsafe_allow_html=True)
     
     with col2:
         if 'openai' in available_providers:
-            use_openai = st.checkbox("**OpenAI** (GPT-4)", value=True, help="Comprehensive analysis")
+            use_openai = st.checkbox("**Use OpenAI**", value=True)
             if use_openai:
                 providers.append('openai')
-            st.markdown('<span class="provider-badge openai-badge">GPT-4 Mini</span>', unsafe_allow_html=True)
-    
-    with col3:
-        if len(available_providers) >= 2:
-            compare_both = st.checkbox("**Compare Both**", value=False, help="Get results from both AIs")
-            if compare_both:
-                providers = available_providers
     
     st.session_state.ai_providers = providers
     
     # File upload
-    st.markdown("### 📤 Upload Files for AI Review")
+    st.markdown("### 📤 Upload Packaging Files")
     
     uploaded_files = st.file_uploader(
-        "Select packaging files",
-        type=['pdf', 'txt'],
+        "Select PDF files (packaging, wash tags, quick start guides)",
+        type=['pdf'],
         accept_multiple_files=True,
-        help="Upload all packaging, label, and manual files for AI validation"
+        help="Upload all wheelchair bag packaging files for validation"
     )
     
+    # Show current OCR status
+    if uploaded_files and st.session_state.use_ocr:
+        st.markdown('<div class="ocr-status">🔍 OCR is enabled - image-based PDFs will be processed automatically</div>', unsafe_allow_html=True)
+    
     if uploaded_files and providers:
-        # Validate button
-        if st.button("🚀 Start AI Validation", type="primary", use_container_width=True):
-            # Increment counter to ensure unique IDs
-            st.session_state.validation_counter += 1
-            validation_id = st.session_state.validation_counter
-            
+        if st.button("🚀 Start Validation", type="primary", use_container_width=True):
             results = {}
             
             progress_bar = st.progress(0)
@@ -1240,163 +1087,135 @@ def main():
             for idx, file in enumerate(uploaded_files):
                 status_text.text(f"Processing {file.name}...")
                 
-                # Extract text
+                # Extract text with enhanced method
                 file.seek(0)
-                if file.type == 'application/pdf':
-                    text = extract_text_from_pdf(file)
-                else:
-                    # For text files, try to detect encoding
-                    file_bytes = file.read()
-                    
-                    if CHARDET_AVAILABLE:
-                        # Detect encoding
-                        result = chardet.detect(file_bytes)
-                        encoding = result['encoding'] or 'utf-8'
-                        try:
-                            text = file_bytes.decode(encoding)
-                        except:
-                            text = file_bytes.decode('utf-8', errors='ignore')
-                    else:
-                        text = file_bytes.decode('utf-8', errors='ignore')
+                text, method, extraction_details = extract_text_from_pdf_enhanced(
+                    file, 
+                    file.name, 
+                    use_ocr=st.session_state.use_ocr
+                )
                 
-                # Check if text extraction was successful
-                skip_ai_analysis = False
-                if not text or len(text) < 10:
-                    st.warning(f"⚠️ No text extracted from {file.name}. File may be empty.")
-                    skip_ai_analysis = True
-                elif "[Image-based PDF detected" in text:
-                    st.error(f"🖼️ {file.name} appears to be an image-based PDF. Text extraction requires OCR capability.")
-                    skip_ai_analysis = True
-                elif "[Error" in text or "[No text could be extracted" in text:
-                    st.error(f"❌ Could not extract text from {file.name}. {text}")
-                    skip_ai_analysis = True
+                # Get product info
+                product_info = detect_vive_product_type(file.name, text)
                 
-                # Get file info
-                file_info = extract_file_info(file.name)
-                
-                # Store basic file results
+                # Store file results
                 file_results = {
-                    'file_info': file_info,
-                    'text_length': len(text) if not skip_ai_analysis else 0,
-                    'text_preview': text[:500] + '...' if len(text) > 500 and not skip_ai_analysis else text,
-                    'validation_id': validation_id,
-                    'extraction_failed': skip_ai_analysis
+                    'product_info': product_info,
+                    'extraction_details': extraction_details,
+                    'text_preview': text[:500] if not text.startswith("[") else text
                 }
                 
-                # Only proceed with AI analysis if text was successfully extracted
-                if not skip_ai_analysis:
-                    # Determine checklist items based on file type
-                    checklist_items = []
-                    for category, items in VALIDATION_CHECKLIST.items():
-                        if file_info['type'] in category.lower() or not file_info['type']:
-                            checklist_items.extend(items)
+                # Check if extraction failed
+                if text.startswith("[") and text.endswith("]"):
+                    file_results['extraction_failed'] = True
+                    file_results['skip_reason'] = text
                     
-                    if not checklist_items:
-                        checklist_items = VALIDATION_CHECKLIST.get("Packaging Artwork", [])
+                    # Show specific message for image-based PDFs
+                    if "Image-based PDF" in text and not st.session_state.use_ocr:
+                        st.warning(f"⚠️ {file.name} is an image-based PDF. Enable OCR in the sidebar to extract text.")
+                else:
+                    # Determine checklist based on file type
+                    file_type = product_info.get('type', 'packaging')
+                    checklist_key = {
+                        'packaging': 'Packaging Artwork',
+                        'washtag': 'Wash Tag/Care Label',
+                        'quickstart': 'Quick Start Guide'
+                    }.get(file_type, 'Packaging Artwork')
+                    
+                    checklist_items = VIVE_VALIDATION_CHECKLIST.get(checklist_key, [])
                     
                     # Create prompt
-                    prompt = create_ai_prompt(text, file.name, file_info, checklist_items)
+                    prompt = create_vive_specific_prompt(text, file.name, product_info, checklist_items)
                     
-                    if prompt:  # Only call AI if we have a valid prompt
-                        # Call selected AI providers
-                        if 'claude' in providers and 'claude' in api_keys:
+                    if prompt:
+                        # Call AI providers
+                        if 'claude' in providers:
                             with st.spinner(f"🤖 Claude reviewing {file.name}..."):
                                 claude_result = call_claude(prompt, api_keys['claude'])
                                 file_results['claude'] = claude_result
-                                time.sleep(0.5)  # Rate limiting
+                                time.sleep(0.5)
                         
-                        if 'openai' in providers and 'openai' in api_keys:
+                        if 'openai' in providers:
                             with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
                                 openai_result = call_openai(prompt, api_keys['openai'])
                                 file_results['openai'] = openai_result
-                                time.sleep(0.5)  # Rate limiting
-                    else:
-                        # No valid prompt could be created
-                        logger.warning(f"Could not create valid prompt for {file.name}")
-                        file_results['analysis_skipped'] = True
-                        file_results['skip_reason'] = "Insufficient text for analysis"
-                else:
-                    # Add placeholder results for failed extractions
-                    file_results['analysis_skipped'] = True
-                    file_results['skip_reason'] = text
+                                time.sleep(0.5)
                 
                 results[file.name] = file_results
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            progress_bar.empty()  # Clean up progress bar
-            status_text.empty()   # Clean up status text
-            st.success("✅ AI validation complete!")
+            progress_bar.empty()
+            status_text.empty()
+            st.success("✅ Validation complete!")
             st.session_state.validation_results = results
             st.balloons()
-    
-    elif uploaded_files and not providers:
-        st.warning("⚠️ Please select at least one AI provider to validate files.")
-    elif not uploaded_files and providers:
-        st.info("📤 Upload files above to start AI validation.")
     
     # Display results
     if st.session_state.validation_results:
         st.markdown("---")
-        st.markdown("## 📊 AI Validation Results")
+        st.markdown("## 📊 Validation Results")
         
+        # Summary metrics
+        total_files = len(st.session_state.validation_results)
+        approved_count = sum(1 for r in st.session_state.validation_results.values() 
+                           for p in ['claude', 'openai'] 
+                           if p in r and r[p].get('overall_assessment') == 'APPROVED')
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Files", total_files)
+        with col2:
+            st.metric("Approved", approved_count)
+        with col3:
+            st.metric("Issues", total_files - approved_count)
+        
+        # Individual file results
         for filename, file_results in st.session_state.validation_results.items():
             with st.expander(f"📄 {filename}", expanded=True):
-                # File info
-                file_info = file_results['file_info']
-                validation_id = file_results.get('validation_id', 0)
+                # Product info card
+                product_info = file_results['product_info']
+                extraction_details = file_results.get('extraction_details', {})
                 
-                # Check if text extraction failed
-                if file_results.get('extraction_failed', False):
-                    st.error(f"**Text Extraction Failed**")
-                    st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']}")
-                    st.info(f"**Reason:** {file_results.get('skip_reason', 'Unknown error')}")
+                st.markdown(f"""
+                <div class="product-card">
+                    <strong>Product:</strong> {product_info.get('product', 'unknown').replace('_', ' ').title()}<br>
+                    <strong>Type:</strong> {product_info.get('type', 'unknown')}<br>
+                    <strong>Color:</strong> {product_info.get('color', 'unknown')}<br>
+                    <strong>PDF Info:</strong> {extraction_details.get('pages', 0)} pages, 
+                    {extraction_details.get('images', 0)} images, 
+                    {extraction_details.get('text_chars', 0)} text chars
+                    {' (Image-based)' if extraction_details.get('is_image_based') else ''}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Check if extraction failed
+                if file_results.get('extraction_failed'):
+                    st.error("**Text Extraction Failed**")
+                    reason = file_results.get('skip_reason', 'Unknown error')
+                    st.info(f"**Reason:** {reason}")
                     
-                    # Provide helpful suggestions based on the error
-                    if "[Image-based PDF" in file_results.get('skip_reason', ''):
-                        st.markdown("### 💡 Suggestions for Image-based PDFs:")
+                    if "Image-based PDF" in reason and not st.session_state.use_ocr:
                         st.markdown("""
-                        - Use Adobe Acrobat's OCR feature to convert to text
-                        - Re-export from the original design software with text layers
-                        - Use online OCR services like SmallPDF or ILovePDF
-                        - Ensure "Export as PDF" includes text, not just images
-                        """)
-                    else:
-                        st.markdown("### 💡 General Suggestions:")
-                        st.markdown("""
-                        - Ensure the PDF contains actual text (not just images)
-                        - Try re-exporting the PDF with text layers
-                        - Check that the file isn't corrupted
-                        - Save as a text-based PDF from the source application
+                        ### 💡 Solution:
+                        1. Enable OCR in the sidebar
+                        2. Re-upload and process the file
+                        
+                        Or use Adobe Acrobat to add text layer to the PDF.
                         """)
                     continue
                 
-                st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']} | **Text extracted:** {file_results['text_length']} chars")
+                # Display AI results
+                if 'claude' in file_results:
+                    st.markdown("#### 🤖 Claude Validation")
+                    display_vive_validation_results(file_results['claude'], 'Claude', filename)
                 
-                # Show results based on providers used
-                if len(st.session_state.ai_providers) > 1 and 'claude' in file_results and 'openai' in file_results:
-                    # Compare both
-                    st.markdown("### 🔄 AI Comparison")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("#### 🤖 Claude Results")
-                        display_ai_results(file_results['claude'], 'Claude', filename, f"compare_{validation_id}")
-                    
-                    with col2:
-                        st.markdown("#### 🤖 OpenAI Results")
-                        display_ai_results(file_results['openai'], 'OpenAI', filename, f"compare_{validation_id}")
-                else:
-                    # Single provider
+                if 'openai' in file_results:
                     if 'claude' in file_results:
-                        st.markdown("#### 🤖 Claude Validation")
-                        display_ai_results(file_results['claude'], 'Claude', filename, f"single_{validation_id}")
-                    
-                    if 'openai' in file_results:
-                        st.markdown("#### 🤖 OpenAI Validation")
-                        display_ai_results(file_results['openai'], 'OpenAI', filename, f"single_{validation_id}")
+                        st.markdown("---")
+                    st.markdown("#### 🤖 OpenAI Validation")
+                    display_vive_validation_results(file_results['openai'], 'OpenAI', filename)
         
-        # Export results
+        # Export options
         st.markdown("### 💾 Export Results")
         
         col1, col2 = st.columns(2)
@@ -1405,6 +1224,7 @@ def main():
             # JSON export
             export_data = {
                 'timestamp': datetime.now().isoformat(),
+                'company': 'Vive Health',
                 'providers': st.session_state.ai_providers,
                 'results': st.session_state.validation_results
             }
@@ -1412,46 +1232,20 @@ def main():
             st.download_button(
                 label="📥 Download JSON Report",
                 data=json.dumps(export_data, indent=2),
-                file_name=f"ai_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                file_name=f"vive_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 mime="application/json"
             )
         
         with col2:
-            # Summary export
-            summary = generate_summary_report(st.session_state.validation_results)
+            # Summary report
+            summary = generate_vive_summary_report(st.session_state.validation_results)
             
             st.download_button(
                 label="📥 Download Summary Report",
                 data=summary,
-                file_name=f"validation_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                file_name=f"vive_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                 mime="text/plain"
             )
-
-    else:
-        # Instructions
-        st.info("""
-        ### 🚀 How to Use AI Validation
-        
-        1. **Select AI Provider(s)**: Choose Claude, OpenAI, or both for comparison
-        2. **Upload Files**: Add your packaging PDFs and text files
-        3. **Review Results**: AI will check against the full validation checklist
-        4. **Export Reports**: Download detailed validation results
-        
-        **What AI Checks:**
-        - ✅ Complete checklist validation
-        - ✅ Spelling and grammar
-        - ✅ Origin marking (Made in China)
-        - ✅ Color consistency
-        - ✅ SKU format validation
-        - ✅ Brand presence
-        - ✅ Overall quality assessment
-        
-        **Benefits of AI Review:**
-        - 🎯 More thorough than pattern matching
-        - 🔍 Catches subtle issues
-        - 💡 Provides specific recommendations
-        - ⚡ Fast and consistent
-        """)
 
 if __name__ == "__main__":
     main()
