@@ -1,6 +1,6 @@
 """
-Universal Packaging Validator for Vive Health
-Works with ANY product - no database required
+Advanced Packaging Validation System for Vive Health
+Dynamic, database-free validation with AI chat interface
 """
 
 import streamlit as st
@@ -9,22 +9,29 @@ import re
 from datetime import datetime
 import logging
 import os
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set
 import json
 import PyPDF2
 from collections import defaultdict
 import time
+import base64
 import io
+from difflib import SequenceMatcher
+import hashlib
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
-    page_title="Vive Health Universal Packaging Validator",
+    page_title="Vive Health Advanced Packaging Validator",
     page_icon="🏥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # Try to import AI libraries
@@ -50,137 +57,378 @@ except ImportError:
     PDFPLUMBER_AVAILABLE = False
 
 try:
-    import fitz
+    import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
 
-# Universal validation requirements
-UNIVERSAL_REQUIREMENTS = [
-    "Made in China",
-    "Vive or vive® branding",
-    "Website URL (vivehealth.com)",
-    "Contact information",
-    "Product identifier (SKU/Model)",
-    "Regulatory compliance marks"
-]
 
-def inject_css():
-    """Clean, professional CSS"""
+def inject_advanced_css():
+    """Enhanced CSS for professional UI"""
     st.markdown("""
     <style>
+        /* Main theme */
+        .stApp {
+            background-color: #f5f7fa;
+        }
         .main-header {
-            background: linear-gradient(135deg, #3498db 0%, #2c3e50 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 2rem;
-            border-radius: 10px;
+            border-radius: 15px;
             color: white;
             text-align: center;
             margin-bottom: 2rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
         }
-        
-        .file-card {
+        .product-card {
             background: white;
-            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-left: 4px solid #667eea;
+        }
+        .cross-check-alert {
+            background: #fff5f5;
+            border: 2px solid #feb2b2;
             border-radius: 8px;
             padding: 1rem;
             margin: 0.5rem 0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        
-        .metric-box {
-            background: #f8f9fa;
-            border-radius: 8px;
+        .chat-message {
+            padding: 1rem;
+            border-radius: 10px;
+            margin: 0.5rem 0;
+        }
+        .user-message {
+            background: #e6f2ff;
+            margin-left: 2rem;
+        }
+        .ai-message {
+            background: #f0f4f8;
+            margin-right: 2rem;
+        }
+        .metric-card {
+            background: white;
+            border-radius: 10px;
             padding: 1.5rem;
             text-align: center;
-            border: 1px solid #e9ecef;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
-        
         .metric-value {
-            font-size: 2.5rem;
+            font-size: 2rem;
             font-weight: bold;
-            color: #2c3e50;
+            color: #667eea;
         }
-        
-        .chat-container {
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 1rem;
-            height: 500px;
-            overflow-y: auto;
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 500;
         }
-        
-        .user-msg {
-            background: #3498db;
-            color: white;
-            padding: 0.75rem;
-            border-radius: 10px;
-            margin: 0.5rem 0;
-            margin-left: 20%;
+        .status-pass {
+            background: #c6f6d5;
+            color: #276749;
         }
-        
-        .ai-msg {
-            background: #ecf0f1;
-            padding: 0.75rem;
-            border-radius: 10px;
-            margin: 0.5rem 0;
-            margin-right: 20%;
+        .status-fail {
+            background: #fed7d7;
+            color: #9b2c2c;
         }
-        
-        .issue-card {
-            background: #fee;
-            border-left: 4px solid #c0392b;
-            padding: 1rem;
-            margin: 0.5rem 0;
-            border-radius: 4px;
-        }
-        
-        .warning-card {
-            background: #fff3cd;
-            border-left: 4px solid #f39c12;
-            padding: 1rem;
-            margin: 0.5rem 0;
-            border-radius: 4px;
-        }
-        
-        .success-card {
-            background: #d4edda;
-            border-left: 4px solid #27ae60;
-            padding: 1rem;
-            margin: 0.5rem 0;
-            border-radius: 4px;
+        .status-warning {
+            background: #fefcbf;
+            color: #975a16;
         }
     </style>
     """, unsafe_allow_html=True)
 
 def get_api_keys():
-    """Get API keys from secrets or environment"""
+    """Get API keys from various sources"""
     keys = {}
-    
-    # Check streamlit secrets
     if hasattr(st, 'secrets'):
-        if 'OPENAI_API_KEY' in st.secrets:
-            keys['openai'] = st.secrets['OPENAI_API_KEY']
-        elif 'openai_api_key' in st.secrets:
-            keys['openai'] = st.secrets['openai_api_key']
-            
-        if 'ANTHROPIC_API_KEY' in st.secrets:
-            keys['claude'] = st.secrets['ANTHROPIC_API_KEY']
-        elif 'anthropic_api_key' in st.secrets:
-            keys['claude'] = st.secrets['anthropic_api_key']
-    
-    # Check environment
+        for key_name in ['OPENAI_API_KEY', 'openai_api_key', 'openai']:
+            if key_name in st.secrets:
+                keys['openai'] = st.secrets[key_name]
+                break
+        for key_name in ['ANTHROPIC_API_KEY', 'anthropic_api_key', 'claude_api_key']:
+            if key_name in st.secrets:
+                keys['claude'] = st.secrets[key_name]
+                break
     if 'openai' not in keys:
         keys['openai'] = os.getenv('OPENAI_API_KEY')
     if 'claude' not in keys:
         keys['claude'] = os.getenv('ANTHROPIC_API_KEY')
-    
     return {k: v for k, v in keys.items() if v}
 
+class GenericProductDetector:
+    """
+    Advanced, database-free product detection from filenames and content
+    using heuristics.
+    """
+    @staticmethod
+    def detect_product(filename: str, text_content: str = "") -> Dict[str, Any]:
+        result = {
+            'guessed_product_name': 'Unknown',
+            'guessed_sku': 'Not found',
+            'guessed_color': 'Not found',
+            'file_type': 'Unknown',
+            'detection_confidence': 0
+        }
+        filename_lower = filename.lower()
+        text_lower = text_content.lower() if text_content else ""
+
+        # Heuristic 1: Find potential SKUs (e.g., LVAXXXX, strings with numbers and letters)
+        sku_patterns = [
+            r'\b[A-Z]{2,3}\d{3,4}[A-Z\-]*\b',  # E.g., LVA1004, LVA3100BLK
+            r'\b\w{2,}-\d{4,}\b' # E.g., RHB-1001
+        ]
+        for pattern in sku_patterns:
+            match = re.search(pattern, text_content, re.IGNORECASE)
+            if match:
+                result['guessed_sku'] = match.group(0).upper()
+                result['detection_confidence'] += 40
+                break
+
+        # Heuristic 2: Guess product name from filename (remove extensions, separators)
+        name_from_file = os.path.splitext(filename)[0]
+        name_from_file = re.sub(r'[\-_]', ' ', name_from_file).title()
+        # Clean up common terms
+        for term in ['Packaging', 'Artwork', 'Manual', 'Qsg', 'Wash Tag', 'Vive Health']:
+             name_from_file = name_from_file.replace(term, '')
+        result['guessed_product_name'] = name_from_file.strip()
+        result['detection_confidence'] += 20
+
+
+        # Heuristic 3: Detect file type from filename
+        file_types = {
+            'packaging': ['packaging', 'package', 'box', 'artwork'],
+            'washtag': ['wash', 'tag', 'care', 'label'],
+            'quickstart': ['quick', 'start', 'guide', 'qsg'],
+            'manual': ['manual', 'instruction', 'user'],
+            'shipping': ['shipping', 'ship', 'mark'],
+            'qc': ['qc', 'quality', 'check']
+        }
+        for file_type, keywords in file_types.items():
+            if any(keyword in filename_lower for keyword in keywords):
+                result['file_type'] = file_type
+                result['detection_confidence'] += 15
+                break
+
+        return result
+
+
+class CrossFileValidator:
+    """Validates consistency across multiple files"""
+    def __init__(self):
+        self.files_data = []
+
+    def add_file(self, filename: str, product_info: Dict, extracted_text: str):
+        """Add a file to the validation set"""
+        self.files_data.append({
+            'filename': filename,
+            'info': product_info,
+            'text': extracted_text
+        })
+
+    def validate_consistency(self) -> List[Dict]:
+        """Check for inconsistencies across files based on detected SKUs"""
+        inconsistencies = []
+        sku_groups = defaultdict(list)
+
+        # Group files by the first part of their guessed SKU (e.g., LVA1004)
+        for file_data in self.files_data:
+            sku = file_data['info'].get('guessed_sku', 'N/A')
+            sku_base = sku.split('-')[0] if '-' in sku else re.match(r'[A-Z]+\d+', sku, re.IGNORECASE)
+            if sku_base:
+                sku_groups[sku_base.group(0) if hasattr(sku_base, 'group') else sku_base].append(file_data)
+
+        for sku_base, files in sku_groups.items():
+            if len(files) > 1:
+                # Check for multiple full SKUs within the same base group
+                full_skus = {f['info'].get('guessed_sku') for f in files}
+                if len(full_skus) > 1:
+                    inconsistencies.append({
+                        'type': 'variant_difference',
+                        'severity': 'info',
+                        'files': [f['filename'] for f in files],
+                        'message': f"Multiple product variants detected for base '{sku_base}': {', '.join(full_skus)}",
+                        'expected': True
+                    })
+        return inconsistencies
+
+class AIValidator:
+    """Advanced AI validation with context awareness"""
+    def __init__(self, api_keys: Dict):
+        self.api_keys = api_keys
+        self.context = []
+
+    def add_context(self, filename: str, product_info: Dict, text: str):
+        """Add file to validation context"""
+        self.context.append({
+            'filename': filename,
+            'product_info': product_info,
+            'text_preview': text[:1000] if text else ""
+        })
+
+    def create_comprehensive_prompt(self, filename: str, text: str, product_info: Dict) -> str:
+        prompt = f"""You are a meticulous quality control expert for Vive Health. You are reviewing a technical document.
+
+CURRENT FILE:
+- Filename: {filename}
+- Guessed Product Name: {product_info.get('guessed_product_name', 'Unknown')}
+- Guessed File Type: {product_info.get('file_type', 'Unknown')}
+- Detected SKU: {product_info.get('guessed_sku', 'Not detected')}
+
+EXTRACTED TEXT (first 3000 chars):
+---
+{text[:3000]}
+---
+
+VALIDATION REQUIREMENTS (Be strict):
+1.  **Universal Branding:**
+    - Must say "Made in China". Check for exact phrasing.
+    - Must have Vive Health branding (e.g., "vive®", "Vive Health" logo).
+    - Must have a website, preferably "vivehealth.com".
+    - Must have contact information (phone number or support email).
+2.  **Content & Accuracy:**
+    - Check for any obvious spelling or grammatical errors.
+    - Ensure information seems logical and complete for the detected file type (e.g., a 'wash tag' should have material composition).
+    - If a SKU is present, verify it is formatted correctly (e.g., not garbled).
+3.  **Regulatory & Safety:**
+    - Flag the presence or absence of any safety warnings (like California Proposition 65).
+
+Provide your response in valid JSON format only, following this structure:
+{{
+    "overall_assessment": "APPROVED" or "NEEDS_REVISION" or "REVIEW_REQUIRED",
+    "sku_validation": {{
+        "found": "{product_info.get('guessed_sku', 'Not detected')}",
+        "comment": "Provide a brief comment on the SKU's validity or format."
+    }},
+    "requirements_check": {{
+        "made_in_china": {{ "found": true/false, "details": "Quote the exact text if found" }},
+        "vive_branding": {{ "found": true/false, "details": "Describe branding found" }},
+        "website_correct": {{ "found": true/false, "details": "List URLs found" }},
+        "contact_info": {{ "found": true/false, "details": "List contact info found" }}
+    }},
+    "critical_issues": ["List any issues that absolutely require a revision."],
+    "warnings": ["List any potential issues or items that need a second look."],
+    "improvement_suggestions": ["Suggest improvements for clarity, branding, or compliance."]
+}}
+"""
+        return prompt
+
+    def validate_with_ai(self, filename: str, text: str, product_info: Dict) -> Dict:
+        prompt = self.create_comprehensive_prompt(filename, text, product_info)
+        results = {}
+
+        # Use Claude if available
+        if 'claude' in self.api_keys and CLAUDE_AVAILABLE:
+            try:
+                client = anthropic.Anthropic(api_key=self.api_keys['claude'])
+                response = client.messages.create(
+                    model="claude-3.5-sonnet-20240620",  # FIXED MODEL
+                    max_tokens=2000,
+                    temperature=0.1,
+                    system="You are a quality control expert. Always respond with valid JSON.",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                results['claude'] = self._parse_response(response.content[0].text)
+            except Exception as e:
+                logger.error(f"Claude error: {e}")
+                results['claude'] = {"error": str(e)}
+
+        # Use OpenAI if available
+        if 'openai' in self.api_keys and OPENAI_AVAILABLE:
+            try:
+                client = openai.OpenAI(api_key=self.api_keys['openai'])
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a quality control expert. Always respond with valid JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=2000
+                )
+                results['openai'] = self._parse_response(response.choices[0].message.content)
+            except Exception as e:
+                logger.error(f"OpenAI error: {e}")
+                results['openai'] = {"error": str(e)}
+
+        return results
+
+    def _parse_response(self, response_text: str) -> Dict:
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group(0))
+        except Exception as e:
+            logger.error(f"Failed to parse AI JSON response: {e}")
+        return {"error": "Failed to parse response", "raw": response_text}
+
+class ChatInterface:
+    """Interactive chat interface for Q&A about validation results"""
+    def __init__(self, api_keys: Dict):
+        self.api_keys = api_keys
+        if 'chat_messages' not in st.session_state:
+            st.session_state.chat_messages = []
+
+    def add_message(self, role: str, content: str):
+        st.session_state.chat_messages.append({'role': role, 'content': content})
+
+    def get_context_prompt(self, user_question: str, validation_results: Dict) -> str:
+        summary = {
+            'total_files': len(validation_results),
+            'critical_issue_count': 0,
+            'files_with_issues': []
+        }
+        for filename, results in validation_results.items():
+            for provider, ai_result in results.get('ai_results', {}).items():
+                if ai_result.get('critical_issues'):
+                    summary['critical_issue_count'] += len(ai_result['critical_issues'])
+                    summary['files_with_issues'].append(filename)
+        summary['files_with_issues'] = list(set(summary['files_with_issues']))
+
+        prompt = f"""You are a helpful QC expert assistant for Vive Health.
+VALIDATION SUMMARY:
+{json.dumps(summary, indent=2, default=str)}
+
+USER QUESTION: {user_question}
+
+Answer the user's question based on the provided summary and the detailed results (which you should assume you have access to). Be concise, helpful, and suggest actionable next steps. Reference specific filenames if relevant.
+"""
+        return prompt
+
+    def process_message(self, user_message: str, validation_results: Dict) -> str:
+        self.add_message('user', user_message)
+        prompt = self.get_context_prompt(user_message, validation_results)
+        response = "AI service is unavailable. Please check API keys and configurations."
+
+        if 'claude' in self.api_keys and CLAUDE_AVAILABLE:
+            try:
+                client = anthropic.Anthropic(api_key=self.api_keys['claude'])
+                messages_for_api = [{"role": m['role'], "content": m['content']} for m in st.session_state.chat_messages[-5:]]
+                
+                ai_response = client.messages.create(
+                    model="claude-3.5-sonnet-20240620", # FIXED MODEL
+                    max_tokens=1500,
+                    temperature=0.7,
+                    system="You are a helpful QC expert assistant for Vive Health.",
+                    messages=messages_for_api
+                )
+                response = ai_response.content[0].text
+            except Exception as e:
+                logger.error(f"Chat error: {e}")
+                response = f"🤖 Error: {str(e)}"
+        
+        self.add_message('assistant', response)
+        return response
+
 def extract_text_from_pdf(file_bytes, filename=""):
-    """Extract text from PDF"""
-    text = ""
-    pages = 0
-    
+    """Extract text from PDF with multiple methods"""
+    extracted_text = ""
+    extraction_method = "none"
+    page_count = 0
     try:
         # Try pdfplumber first
         if PDFPLUMBER_AVAILABLE:
@@ -188,719 +436,237 @@ def extract_text_from_pdf(file_bytes, filename=""):
                 import pdfplumber
                 file_bytes.seek(0)
                 with pdfplumber.open(file_bytes) as pdf:
-                    pages = len(pdf.pages)
+                    page_count = len(pdf.pages)
                     for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-            except:
-                pass
-        
-        # Try PyPDF2
-        if not text:
-            file_bytes.seek(0)
-            reader = PyPDF2.PdfReader(file_bytes)
-            pages = len(reader.pages)
-            for page in reader.pages:
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-                except:
-                    continue
-    
+                        text = page.extract_text()
+                        if text:
+                            extracted_text += text + "\n"
+                            extraction_method = "pdfplumber"
+            except: pass
+        # Try PyMuPDF
+        if not extracted_text and PYMUPDF_AVAILABLE:
+            try:
+                import fitz
+                file_bytes.seek(0)
+                doc = fitz.open(stream=file_bytes.read(), filetype="pdf")
+                page_count = len(doc)
+                for page in doc:
+                    text = page.get_text()
+                    if text:
+                        extracted_text += text + "\n"
+                        extraction_method = "pymupdf"
+                doc.close()
+            except: pass
+        # Fallback to PyPDF2
+        if not extracted_text:
+            try:
+                file_bytes.seek(0)
+                reader = PyPDF2.PdfReader(file_bytes)
+                page_count = len(reader.pages)
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        extracted_text += text + "\n"
+                        extraction_method = "pypdf2"
+            except: pass
     except Exception as e:
         logger.error(f"PDF extraction error: {e}")
-    
-    return text.strip(), pages
+    return extracted_text.strip(), extraction_method, page_count
 
-def detect_file_info(filename, text):
-    """Detect basic file information"""
-    info = {
-        'file_type': 'unknown',
-        'has_text': bool(text),
-        'detected_elements': []
-    }
+def display_validation_dashboard(results: Dict, cross_validator: CrossFileValidator):
+    st.markdown("### 📊 Validation Summary")
+    col1, col2, col3, col4 = st.columns(4)
     
-    filename_lower = filename.lower()
-    
-    # Detect file type
-    if any(x in filename_lower for x in ['packaging', 'package', 'box']):
-        info['file_type'] = 'packaging'
-    elif any(x in filename_lower for x in ['wash', 'tag', 'care', 'label']):
-        info['file_type'] = 'washtag'
-    elif any(x in filename_lower for x in ['quick', 'start', 'guide', 'qsg']):
-        info['file_type'] = 'quickstart'
-    elif any(x in filename_lower for x in ['manual', 'instruction']):
-        info['file_type'] = 'manual'
-    elif any(x in filename_lower for x in ['shipping', 'ship']):
-        info['file_type'] = 'shipping'
-    
-    # Detect elements in text
-    if text:
-        text_lower = text.lower()
-        
-        # Check for key elements
-        if 'made in china' in text_lower:
-            info['detected_elements'].append('Made in China')
-        if 'vive' in text_lower:
-            info['detected_elements'].append('Vive branding')
-        if 'vivehealth.com' in text_lower:
-            info['detected_elements'].append('Website')
-        
-        # Try to find SKU patterns
-        sku_patterns = [
-            r'LVA\d{4}[A-Z]{0,3}',
-            r'SUP\d{4}[A-Z]{0,3}',
-            r'MOB\d{4}[A-Z]{0,3}',
-            r'[A-Z]{3}\d{4}[A-Z]{0,3}'
-        ]
-        
-        for pattern in sku_patterns:
-            matches = re.findall(pattern, text)
-            if matches:
-                info['detected_elements'].append(f'SKU: {matches[0]}')
-                break
-    
-    return info
+    total_files = len(results)
+    approved = sum(1 for r in results.values() if any(ai.get('overall_assessment') == 'APPROVED' for ai in r.get('ai_results', {}).values()))
+    needs_revision = sum(1 for r in results.values() if any(ai.get('overall_assessment') == 'NEEDS_REVISION' for ai in r.get('ai_results', {}).values()))
+    inconsistencies = cross_validator.validate_consistency()
 
-def create_validation_prompt(filename, text, file_info, other_files):
-    """Create AI validation prompt"""
-    prompt = f"""You are a quality control expert for Vive Health medical devices.
+    with col1:
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_files}</div><div>Total Files</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color: #48bb78;">{approved}</div><div>Approved</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color: #f56565;">{needs_revision}</div><div>Needs Revision</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color: #ed8936;">{len(inconsistencies)}</div><div>Product Groups</div></div>', unsafe_allow_html=True)
 
-CURRENT FILE: {filename}
-File Type: {file_info.get('file_type', 'unknown')}
-Has Text: {file_info.get('has_text', False)}
+    st.markdown("### 🔄 Cross-File Validation")
+    if inconsistencies:
+        st.info("The following product groups were detected based on SKU prefixes, indicating multiple variants may be present.")
+        for issue in inconsistencies:
+            st.markdown(f"**{issue['type'].replace('_', ' ').title()}:** {issue['message']}")
+    else:
+        st.success("✅ All files appear to be for the same product or no overlapping SKU prefixes were found.")
 
-OTHER FILES IN BATCH ({len(other_files)} total):
-"""
-    
-    # Add context from other files
-    for other in other_files[:5]:  # Limit to 5 files
-        if other['filename'] != filename:
-            prompt += f"- {other['filename']} ({other['file_type']})\n"
-    
-    prompt += f"""
-
-EXTRACTED TEXT (first 2000 chars):
-{text[:2000] if text else 'No text extracted'}
-
-UNIVERSAL REQUIREMENTS TO CHECK:
-1. Must have "Made in China" text
-2. Must have Vive or vive® branding
-3. Must have website (vivehealth.com)
-4. Must have contact information
-5. Must have product identifier (SKU/Model)
-6. Must have appropriate regulatory marks
-
-TASK:
-1. Identify what product this is for (based on content)
-2. Check all universal requirements
-3. Note any inconsistencies with other files if applicable
-4. Identify critical issues vs minor warnings
-
-RESPONSE FORMAT (JSON):
-{{
-    "product_detected": "description of product",
-    "overall_status": "PASS" or "FAIL" or "REVIEW",
-    "requirements_met": {{
-        "made_in_china": true/false,
-        "vive_branding": true/false,
-        "website": true/false,
-        "contact_info": true/false,
-        "product_id": true/false,
-        "regulatory_marks": true/false
-    }},
-    "critical_issues": ["list of critical problems"],
-    "warnings": ["list of minor issues"],
-    "cross_file_observations": ["observations about consistency with other files"],
-    "recommendations": ["specific fixes needed"]
-}}"""
-    
-    return prompt
-
-def validate_with_ai(filename, text, file_info, other_files, api_keys):
-    """Run AI validation"""
-    results = {}
-    prompt = create_validation_prompt(filename, text, file_info, other_files)
-    
-    # Try Claude
-    if 'claude' in api_keys and CLAUDE_AVAILABLE:
-        try:
-            client = anthropic.Anthropic(api_key=api_keys['claude'])
-            response = client.messages.create(
-                model="claude-3-haiku-20240307",  # FIXED MODEL NAME
-                max_tokens=1500,
-                temperature=0.1,
-                system="You are a packaging validation expert. Respond only with JSON.",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            # Parse response
-            try:
-                json_text = response.content[0].text
-                json_match = re.search(r'\{[\s\S]*\}', json_text)
-                if json_match:
-                    results['claude'] = json.loads(json_match.group(0))
-                else:
-                    results['claude'] = {"error": "Failed to parse response"}
-            except Exception as e:
-                results['claude'] = {"error": str(e)}
-                
-        except Exception as e:
-            logger.error(f"Claude error: {e}")
-            results['claude'] = {"error": str(e)}
-    
-    # Try OpenAI
-    if 'openai' in api_keys and OPENAI_AVAILABLE:
-        try:
-            client = openai.OpenAI(api_key=api_keys['openai'])
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a packaging validation expert. Respond only with JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=1500
-            )
-            
-            # Parse response
-            try:
-                json_text = response.choices[0].message.content
-                json_match = re.search(r'\{[\s\S]*\}', json_text)
-                if json_match:
-                    results['openai'] = json.loads(json_match.group(0))
-                else:
-                    results['openai'] = {"error": "Failed to parse response"}
-            except Exception as e:
-                results['openai'] = {"error": str(e)}
-                
-        except Exception as e:
-            logger.error(f"OpenAI error: {e}")
-            results['openai'] = {"error": str(e)}
-    
-    return results
-
-class SimpleChatBot:
-    """Simple chat interface for Q&A"""
-    
-    def __init__(self, api_keys):
-        self.api_keys = api_keys
-        if 'chat_history' not in st.session_state:
-            st.session_state.chat_history = []
-    
-    def chat(self, user_message, validation_results):
-        """Process chat message"""
-        # Add to history
-        st.session_state.chat_history.append({
-            'role': 'user',
-            'content': user_message
-        })
-        
-        # Create context
-        context = self._create_context(validation_results)
-        
-        # Build prompt
-        prompt = f"""You are a helpful quality control assistant for Vive Health.
-
-VALIDATION RESULTS SUMMARY:
-{context}
-
-USER QUESTION: {user_message}
-
-Please provide a helpful, specific answer based on the validation results.
-Be concise and focus on actionable insights."""
-        
-        # Get response
-        response = None
-        
-        # Try Claude first (FIXED MODEL)
-        if 'claude' in self.api_keys and CLAUDE_AVAILABLE:
-            try:
-                client = anthropic.Anthropic(api_key=self.api_keys['claude'])
-                
-                # Convert chat history to Claude format
-                messages = []
-                for msg in st.session_state.chat_history[-6:]:  # Last 6 messages
-                    messages.append({
-                        "role": "user" if msg['role'] == 'user' else "assistant",
-                        "content": msg['content']
-                    })
-                
-                # Add current question with context
-                messages.append({"role": "user", "content": prompt})
-                
-                ai_response = client.messages.create(
-                    model="claude-3-haiku-20240307",  # FIXED MODEL NAME
-                    max_tokens=1000,
-                    temperature=0.7,
-                    messages=messages
-                )
-                
-                response = ai_response.content[0].text
-                
-            except Exception as e:
-                logger.error(f"Chat error: {e}")
-                
-                # Fallback to OpenAI
-                if 'openai' in self.api_keys and OPENAI_AVAILABLE:
-                    try:
-                        client = openai.OpenAI(api_key=self.api_keys['openai'])
-                        
-                        messages = [{"role": "system", "content": "You are a helpful quality control assistant."}]
-                        for msg in st.session_state.chat_history[-6:]:
-                            messages.append({
-                                "role": msg['role'],
-                                "content": msg['content']
-                            })
-                        messages.append({"role": "user", "content": prompt})
-                        
-                        ai_response = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=messages,
-                            temperature=0.7,
-                            max_tokens=1000
-                        )
-                        
-                        response = ai_response.choices[0].message.content
-                        
-                    except Exception as e2:
-                        response = f"Error connecting to AI services: {str(e)}"
-        
-        # If no Claude, try OpenAI
-        elif 'openai' in self.api_keys and OPENAI_AVAILABLE:
-            try:
-                client = openai.OpenAI(api_key=self.api_keys['openai'])
-                
-                messages = [{"role": "system", "content": "You are a helpful quality control assistant."}]
-                for msg in st.session_state.chat_history[-6:]:
-                    messages.append({
-                        "role": msg['role'],
-                        "content": msg['content']
-                    })
-                messages.append({"role": "user", "content": prompt})
-                
-                ai_response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=1000
-                )
-                
-                response = ai_response.choices[0].message.content
-                
-            except Exception as e:
-                response = f"Error: {str(e)}"
-        else:
-            response = "No AI service available. Please configure API keys."
-        
-        # Add response to history
-        st.session_state.chat_history.append({
-            'role': 'assistant',
-            'content': response
-        })
-        
-        return response
-    
-    def _create_context(self, results):
-        """Create summary context from results"""
-        total_files = len(results)
-        passed = sum(1 for r in results.values() 
-                    if any(ai.get('overall_status') == 'PASS' 
-                          for ai in r.get('ai_results', {}).values()))
-        failed = sum(1 for r in results.values() 
-                    if any(ai.get('overall_status') == 'FAIL' 
-                          for ai in r.get('ai_results', {}).values()))
-        
-        # Collect all issues
-        all_issues = []
-        products_found = set()
-        
-        for filename, data in results.items():
-            for provider, ai_result in data.get('ai_results', {}).items():
-                if 'error' not in ai_result:
-                    if 'product_detected' in ai_result:
-                        products_found.add(ai_result['product_detected'])
-                    if 'critical_issues' in ai_result:
-                        all_issues.extend(ai_result['critical_issues'])
-        
-        context = f"""
-Total Files: {total_files}
-Passed: {passed}
-Failed: {failed}
-Products Found: {', '.join(products_found) if products_found else 'Various'}
-Common Issues: {', '.join(set(all_issues[:5])) if all_issues else 'None'}
-"""
-        return context
-
-def analyze_cross_file_patterns(results):
-    """Analyze patterns across files"""
-    patterns = {
-        'products': defaultdict(list),
-        'file_types': defaultdict(list),
-        'common_issues': defaultdict(int),
-        'missing_requirements': defaultdict(int)
-    }
-    
-    for filename, data in results.items():
-        file_info = data.get('file_info', {})
-        
-        # Group by file type
-        file_type = file_info.get('file_type', 'unknown')
-        patterns['file_types'][file_type].append(filename)
-        
-        # Analyze AI results
-        for provider, ai_result in data.get('ai_results', {}).items():
-            if 'error' not in ai_result:
-                # Track products
-                product = ai_result.get('product_detected', 'Unknown')
-                if product and product != 'Unknown':
-                    patterns['products'][product].append(filename)
-                
-                # Track issues
-                for issue in ai_result.get('critical_issues', []):
-                    patterns['common_issues'][issue] += 1
-                
-                # Track missing requirements
-                reqs = ai_result.get('requirements_met', {})
-                for req, met in reqs.items():
-                    if not met:
-                        patterns['missing_requirements'][req] += 1
-    
-    return patterns
-
-def main():
-    inject_css()
-    
-    # Initialize session state
-    if 'results' not in st.session_state:
-        st.session_state.results = {}
-    if 'chat_bot' not in st.session_state:
-        st.session_state.chat_bot = None
-    
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🏥 Vive Health Universal Packaging Validator</h1>
-        <p>Validates packaging for ANY product - no database required</p>
+def display_file_results(filename: str, results: Dict):
+    product_info = results.get('product_info', {})
+    st.markdown(f"""
+    <div class="product-card">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;">
+            <div><strong>Guessed Product:</strong><br>{product_info.get('guessed_product_name', 'Unknown')}</div>
+            <div><strong>Detected SKU:</strong><br>{product_info.get('guessed_sku', 'Not specified')}</div>
+            <div><strong>File Type:</strong><br>{product_info.get('file_type', 'Unknown')}</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Get API keys
+
+    if 'ai_results' in results:
+        st.markdown("#### 🤖 AI Validation Results")
+        provider_tabs = st.tabs([provider.title() for provider in results['ai_results'].keys()])
+        for idx, (provider, ai_result) in enumerate(results['ai_results'].items()):
+            with provider_tabs[idx]:
+                if 'error' in ai_result:
+                    st.error(f"Error from {provider}: {ai_result['error']}")
+                else:
+                    assessment = ai_result.get('overall_assessment', 'UNKNOWN')
+                    assessment_class = {'APPROVED': 'status-pass', 'NEEDS_REVISION': 'status-fail'}.get(assessment, 'status-warning')
+                    st.markdown(f'**Overall Assessment:** <span class="status-badge {assessment_class}">{assessment}</span>', unsafe_allow_html=True)
+
+                    critical = ai_result.get('critical_issues', [])
+                    if critical:
+                        st.error("**Critical Issues:**")
+                        for issue in critical: st.markdown(f"- {issue}")
+                    
+                    warnings = ai_result.get('warnings', [])
+                    if warnings:
+                        st.warning("**Warnings:**")
+                        for warning in warnings: st.markdown(f"- {warning}")
+
+                    suggestions = ai_result.get('improvement_suggestions', [])
+                    if suggestions:
+                        st.info("**Improvement Suggestions:**")
+                        for suggestion in suggestions: st.markdown(f"- {suggestion}")
+
+                    with st.expander("Show detailed requirements check"):
+                        req_check = ai_result.get('requirements_check', {})
+                        for req, details in req_check.items():
+                            status = "✅ Found" if details.get('found') else "❌ Not Found"
+                            st.markdown(f"**{req.replace('_', ' ').title()}:** {status} - *{details.get('details')}*")
+
+    with st.expander("📄 Extraction Details"):
+        st.markdown(f"""
+        - **Extraction Method:** {results.get('extraction_method', 'Unknown')}
+        - **Pages:** {results.get('page_count', 0)}
+        - **Text Length:** {len(results.get('text', ''))} characters
+        """)
+        if results.get('text'):
+            st.text_area("Text Preview", results.get('text', '')[:500] + "...", height=150, key=f"preview_{filename}")
+
+def main():
+    inject_advanced_css()
+
+    if 'validation_results' not in st.session_state: st.session_state.validation_results = {}
+    if 'cross_validator' not in st.session_state: st.session_state.cross_validator = CrossFileValidator()
+    if 'ai_validator' not in st.session_state: st.session_state.ai_validator = None
+    if 'chat_interface' not in st.session_state: st.session_state.chat_interface = None
+
+    st.markdown("""
+    <div class="main-header">
+        <h1>🏥 Vive Health Advanced Packaging Validator</h1>
+        <p>Dynamic, database-free validation with AI-powered analysis</p>
+    </div>
+    """, unsafe_allow_html=True)
+
     api_keys = get_api_keys()
-    
-    # Initialize chat bot
-    if api_keys and not st.session_state.chat_bot:
-        st.session_state.chat_bot = SimpleChatBot(api_keys)
-    
-    # Sidebar
+
     with st.sidebar:
         st.markdown("### 🔧 System Status")
-        
-        if 'claude' in api_keys:
-            st.success("✅ Claude AI Ready")
+        if api_keys:
+            if 'claude' in api_keys and CLAUDE_AVAILABLE: st.success("✅ Claude AI Ready")
+            if 'openai' in api_keys and OPENAI_AVAILABLE: st.success("✅ OpenAI Ready")
+            if not st.session_state.ai_validator: st.session_state.ai_validator = AIValidator(api_keys)
+            if not st.session_state.chat_interface: st.session_state.chat_interface = ChatInterface(api_keys)
         else:
-            st.warning("❌ Claude Not Configured")
-            
-        if 'openai' in api_keys:
-            st.success("✅ OpenAI Ready")
-        else:
-            st.warning("❌ OpenAI Not Configured")
-        
-        if not api_keys:
-            st.error("⚠️ No AI providers configured")
-            st.markdown("""
-            Add to `.streamlit/secrets.toml`:
-            ```
-            OPENAI_API_KEY = "sk-..."
-            ANTHROPIC_API_KEY = "sk-ant-..."
-            ```
-            """)
-        
+            st.error("❌ No AI providers configured")
+            st.info("Please add API keys to use AI features.")
         st.markdown("---")
-        st.markdown("### 📋 Universal Requirements")
-        for req in UNIVERSAL_REQUIREMENTS:
-            st.markdown(f"• {req}")
-    
-    # Main tabs
-    tab1, tab2, tab3 = st.tabs(["📤 Upload & Validate", "💬 AI Assistant", "📊 Analysis"])
-    
+        st.markdown("### ❓ Help")
+        st.info("""
+        1.  **Upload:** Go to the "Upload & Validate" tab and select all related PDFs for a product.
+        2.  **Validate:** Click "Validate All" to start the analysis.
+        3.  **Review:** Check the "Results Dashboard" for a summary and detailed file-by-file feedback.
+        4.  **Inquire:** Use the "AI Assistant" to ask questions about the results.
+        """)
+
+    tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload & Validate", "📊 Results Dashboard", "💬 AI Assistant", "📥 Export"])
+
     with tab1:
         st.markdown("### Upload Packaging Files")
-        
-        uploaded_files = st.file_uploader(
-            "Select PDF files for any Vive Health products",
-            type=['pdf'],
-            accept_multiple_files=True
-        )
+        st.info("Upload all packaging files for a product (e.g., box art, manual, labels) for comprehensive cross-validation.")
+        uploaded_files = st.file_uploader("Select PDF files", type=['pdf'], accept_multiple_files=True)
         
         if uploaded_files:
-            if st.button("🚀 Validate All", type="primary"):
-                progress = st.progress(0)
-                st.session_state.results = {}
-                
-                # First pass - extract all text
-                file_data = []
-                for idx, file in enumerate(uploaded_files):
-                    progress.progress((idx + 1) / len(uploaded_files) * 0.5)
-                    
-                    file.seek(0)
-                    text, pages = extract_text_from_pdf(file, file.name)
-                    file_info = detect_file_info(file.name, text)
-                    
-                    file_data.append({
-                        'filename': file.name,
-                        'text': text,
-                        'pages': pages,
-                        'file_info': file_info,
-                        'file_type': file_info.get('file_type', 'unknown')
-                    })
-                
-                # Second pass - validate with context
-                for idx, data in enumerate(file_data):
-                    progress.progress(0.5 + (idx + 1) / len(file_data) * 0.5)
-                    
-                    # Run AI validation if we have providers
-                    if api_keys and data['text']:
-                        ai_results = validate_with_ai(
-                            data['filename'],
-                            data['text'],
-                            data['file_info'],
-                            file_data,
-                            api_keys
-                        )
-                        data['ai_results'] = ai_results
-                    
-                    st.session_state.results[data['filename']] = data
-                
-                progress.empty()
+            if st.button("🚀 Validate All", type="primary", use_container_width=True):
+                with st.spinner("Processing files... This may take a moment."):
+                    st.session_state.cross_validator = CrossFileValidator()
+                    st.session_state.validation_results = {}
+                    st.session_state.ai_validator = AIValidator(api_keys) # Re-init AI Validator context
+
+                    progress_bar = st.progress(0, "Initializing...")
+                    for idx, file in enumerate(uploaded_files):
+                        progress_bar.progress((idx + 1) / len(uploaded_files), f"Analyzing: {file.name}")
+                        file.seek(0)
+                        text, method, pages = extract_text_from_pdf(file, file.name)
+                        product_info = GenericProductDetector.detect_product(file.name, text)
+                        
+                        results = {'product_info': product_info, 'text': text, 'extraction_method': method, 'page_count': pages}
+                        
+                        st.session_state.cross_validator.add_file(file.name, product_info, text)
+                        st.session_state.ai_validator.add_context(file.name, product_info, text)
+
+                        if text and st.session_state.ai_validator:
+                            ai_results = st.session_state.ai_validator.validate_with_ai(file.name, text, product_info)
+                            results['ai_results'] = ai_results
+                        
+                        st.session_state.validation_results[file.name] = results
                 st.success("✅ Validation complete!")
-                
-                # Show summary
-                patterns = analyze_cross_file_patterns(st.session_state.results)
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown(f"""
-                    <div class="metric-box">
-                        <div class="metric-value">{len(st.session_state.results)}</div>
-                        <div>Files Processed</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    products_count = len(patterns['products'])
-                    st.markdown(f"""
-                    <div class="metric-box">
-                        <div class="metric-value">{products_count}</div>
-                        <div>Products Found</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col3:
-                    issues_count = sum(patterns['common_issues'].values())
-                    st.markdown(f"""
-                    <div class="metric-box">
-                        <div class="metric-value">{issues_count}</div>
-                        <div>Total Issues</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Show results
-                st.markdown("### 📋 Validation Results")
-                
-                for filename, data in st.session_state.results.items():
-                    with st.expander(f"📄 {filename}"):
-                        col1, col2 = st.columns([2, 1])
-                        
-                        with col1:
-                            st.markdown(f"**File Type:** {data['file_info'].get('file_type', 'unknown')}")
-                            st.markdown(f"**Pages:** {data['pages']}")
-                            st.markdown(f"**Text Extracted:** {'Yes' if data['text'] else 'No'}")
-                            
-                            if data['file_info'].get('detected_elements'):
-                                st.markdown("**Detected Elements:**")
-                                for elem in data['file_info']['detected_elements']:
-                                    st.markdown(f"• {elem}")
-                        
-                        with col2:
-                            if 'ai_results' in data:
-                                for provider, result in data['ai_results'].items():
-                                    if 'error' not in result:
-                                        status = result.get('overall_status', 'UNKNOWN')
-                                        if status == 'PASS':
-                                            st.markdown('<div class="success-card">✅ PASS</div>', 
-                                                      unsafe_allow_html=True)
-                                        elif status == 'FAIL':
-                                            st.markdown('<div class="issue-card">❌ FAIL</div>', 
-                                                      unsafe_allow_html=True)
-                                        else:
-                                            st.markdown('<div class="warning-card">⚠️ REVIEW</div>', 
-                                                      unsafe_allow_html=True)
-                                        break
-                        
-                        # Show AI results
-                        if 'ai_results' in data:
-                            for provider, result in data['ai_results'].items():
-                                if 'error' not in result:
-                                    st.markdown(f"**{provider.title()} Analysis:**")
-                                    
-                                    product = result.get('product_detected', 'Unknown')
-                                    st.info(f"Product: {product}")
-                                    
-                                    # Requirements check
-                                    reqs = result.get('requirements_met', {})
-                                    if reqs:
-                                        cols = st.columns(3)
-                                        for idx, (req, met) in enumerate(reqs.items()):
-                                            with cols[idx % 3]:
-                                                if met:
-                                                    st.success(f"✅ {req.replace('_', ' ').title()}")
-                                                else:
-                                                    st.error(f"❌ {req.replace('_', ' ').title()}")
-                                    
-                                    # Issues
-                                    if result.get('critical_issues'):
-                                        st.markdown("**Critical Issues:**")
-                                        for issue in result['critical_issues']:
-                                            st.markdown(f"• {issue}")
-                                    
-                                    if result.get('recommendations'):
-                                        st.markdown("**Recommendations:**")
-                                        for rec in result['recommendations']:
-                                            st.markdown(f"• {rec}")
-    
+                st.balloons()
+
     with tab2:
-        st.markdown("### 💬 AI Quality Assistant")
-        
-        if not api_keys:
-            st.warning("Please configure AI providers to use the chat assistant")
-        elif not st.session_state.results:
-            st.info("Please validate files first to use the assistant")
+        if st.session_state.validation_results:
+            display_validation_dashboard(st.session_state.validation_results, st.session_state.cross_validator)
+            st.markdown("---")
+            st.markdown("### 📁 Individual File Results")
+            for filename, results in st.session_state.validation_results.items():
+                with st.expander(f"▶️ View results for: **{filename}**"):
+                    display_file_results(filename, results)
         else:
-            # Display chat history
-            chat_container = st.container()
-            
-            with chat_container:
-                for msg in st.session_state.chat_history:
-                    if msg['role'] == 'user':
-                        st.markdown(f'<div class="user-msg">👤 {msg["content"]}</div>', 
-                                  unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'<div class="ai-msg">🤖 {msg["content"]}</div>', 
-                                  unsafe_allow_html=True)
-            
-            # Chat input
-            col1, col2 = st.columns([5, 1])
-            
-            with col1:
-                user_input = st.text_input("Ask about your validation results...", 
-                                         placeholder="e.g., What are the main issues found?")
-            
-            with col2:
-                if st.button("Send", type="primary"):
-                    if user_input and st.session_state.chat_bot:
-                        with st.spinner("Thinking..."):
-                            st.session_state.chat_bot.chat(user_input, st.session_state.results)
-                        st.rerun()
-            
-            # Quick questions
-            st.markdown("#### 💡 Quick Questions")
-            
-            questions = [
-                "What are the most common issues across all files?",
-                "Which files have critical problems?",
-                "Are all products properly identified?",
-                "What's missing from the packaging files?"
-            ]
-            
-            cols = st.columns(2)
-            for idx, question in enumerate(questions):
-                with cols[idx % 2]:
-                    if st.button(question, key=f"q_{idx}"):
-                        if st.session_state.chat_bot:
-                            with st.spinner("Thinking..."):
-                                st.session_state.chat_bot.chat(question, st.session_state.results)
-                            st.rerun()
-    
+            st.info("Upload and validate files in the first tab to see results here.")
+
     with tab3:
-        st.markdown("### 📊 Cross-File Analysis")
-        
-        if st.session_state.results:
-            patterns = analyze_cross_file_patterns(st.session_state.results)
+        st.markdown("### 💬 AI Quality Assistant")
+        if st.session_state.validation_results and st.session_state.chat_interface:
+            st.info("Ask questions about your validation results.")
+            for message in st.session_state.chat_messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
             
-            # File type breakdown
-            st.markdown("#### 📁 Files by Type")
-            
-            file_type_cols = st.columns(len(patterns['file_types']))
-            for idx, (file_type, files) in enumerate(patterns['file_types'].items()):
-                with file_type_cols[idx]:
-                    st.markdown(f"""
-                    <div class="file-card">
-                        <strong>{file_type.title()}</strong><br>
-                        {len(files)} files
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Products found
-            if patterns['products']:
-                st.markdown("#### 🏷️ Products Identified")
-                
-                for product, files in patterns['products'].items():
-                    st.markdown(f"""
-                    <div class="file-card">
-                        <strong>{product}</strong><br>
-                        Found in {len(files)} file(s): {', '.join(files[:3])}{'...' if len(files) > 3 else ''}
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Common issues
-            if patterns['common_issues']:
-                st.markdown("#### ⚠️ Most Common Issues")
-                
-                sorted_issues = sorted(patterns['common_issues'].items(), 
-                                     key=lambda x: x[1], reverse=True)
-                
-                for issue, count in sorted_issues[:5]:
-                    st.markdown(f"""
-                    <div class="warning-card">
-                        {issue} - Found in {count} validation(s)
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Missing requirements
-            if patterns['missing_requirements']:
-                st.markdown("#### ❌ Missing Requirements")
-                
-                cols = st.columns(3)
-                for idx, (req, count) in enumerate(patterns['missing_requirements'].items()):
-                    with cols[idx % 3]:
-                        st.error(f"{req.replace('_', ' ').title()}: {count} files")
-            
-            # Export
-            st.markdown("### 💾 Export Results")
-            
+            if user_input := st.chat_input("e.g., What are the most critical issues found?"):
+                st.session_state.chat_interface.process_message(user_input, st.session_state.validation_results)
+                st.rerun()
+        else:
+            st.warning("Please validate files first to enable the AI assistant.")
+
+    with tab4:
+        st.markdown("### 📥 Export Options")
+        if st.session_state.validation_results:
             export_data = {
                 'timestamp': datetime.now().isoformat(),
-                'total_files': len(st.session_state.results),
-                'patterns': {
-                    'products': dict(patterns['products']),
-                    'common_issues': dict(patterns['common_issues']),
-                    'missing_requirements': dict(patterns['missing_requirements'])
-                },
-                'detailed_results': st.session_state.results
+                'company': 'Vive Health',
+                'total_files': len(st.session_state.validation_results),
+                'cross_validation': st.session_state.cross_validator.validate_consistency(),
+                'results': st.session_state.validation_results
             }
-            
             st.download_button(
-                "📥 Download Full Report (JSON)",
+                "📄 Download Full JSON Report",
                 data=json.dumps(export_data, indent=2, default=str),
-                file_name=f"packaging_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
+                file_name=f"vive_validation_report_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
             )
         else:
-            st.info("Validate files to see analysis")
+            st.info("Upload and validate files to enable export options.")
 
 if __name__ == "__main__":
     main()
