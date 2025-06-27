@@ -1,6 +1,6 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-Bulletproof PDF reading and validation
+Bulletproof PDF reading and validation with AI-powered review and a clean, modern interface.
 """
 
 import streamlit as st
@@ -9,9 +9,9 @@ import re
 from datetime import datetime
 import json
 import logging
-import traceback
 from io import BytesIO
 
+# --- Configuration ---
 # Configure logging for production
 logging.basicConfig(
     level=logging.INFO,
@@ -19,756 +19,337 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Page config
+# Page configuration
 st.set_page_config(
-    page_title="Vive Health Packaging Validator",
+    page_title="Vive Health Production Validator",
     page_icon="🏥",
     layout="wide"
 )
 
-# Initialize session state
-if 'processed_files' not in st.session_state:
-    st.session_state.processed_files = {}
-if 'validation_results' not in st.session_state:
-    st.session_state.validation_results = {}
-
-# Try to import optional libraries
+# --- Library Availability Checks ---
+# Try to import optional, high-performance libraries
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
-    logger.info("pdfplumber available") [cite: 2]
-except:
+    logger.info("pdfplumber is available for PDF processing.")
+except ImportError:
     PDFPLUMBER_AVAILABLE = False
-    logger.warning("pdfplumber not available") [cite: 2]
+    logger.warning("pdfplumber not available. Falling back to other methods.")
 
 try:
     import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
-    logger.info("PyMuPDF available")
-except:
+    logger.info("PyMuPDF (fitz) is available for robust PDF processing.")
+except ImportError:
     PYMUPDF_AVAILABLE = False
-    logger.warning("PyMuPDF not available")
+    logger.warning("PyMuPDF not available. Falling back to other methods.")
 
 try:
     import openai
     OPENAI_AVAILABLE = True
-except:
+except ImportError:
     OPENAI_AVAILABLE = False
 
 try:
     import anthropic
     CLAUDE_AVAILABLE = True
-except:
+except ImportError:
     CLAUDE_AVAILABLE = False
 
+
+# --- Core Logic Classes ---
 class PDFExtractor:
-    """Production-grade PDF text extraction with multiple fallbacks"""
+    """Production-grade PDF text extraction with multiple fallbacks."""
+    @staticmethod
+    def extract_text(file_buffer, filename):
+        """
+        Extracts text from a PDF using the best available method, from PyMuPDF
+        to a raw byte search.
+        """
+        methods_to_try = []
+        if PYMUPDF_AVAILABLE: methods_to_try.append(PDFExtractor._try_pymupdf)
+        if PDFPLUMBER_AVAILABLE: methods_to_try.append(PDFExtractor._try_pdfplumber)
+        methods_to_try.append(PDFExtractor._try_pypdf2) # Always available fallback
+        methods_to_try.append(PDFExtractor._try_raw_extraction) # Last resort
+
+        for method in methods_to_try:
+            try:
+                file_buffer.seek(0)
+                result = method(file_buffer, filename)
+                if result['success']:
+                    logger.info(f"Successfully extracted text from {filename} using {result['method']}.")
+                    return result
+            except Exception as e:
+                logger.error(f"Method failed for {filename}: {e}")
+        
+        return {'success': False, 'text': '', 'errors': ['All extraction methods failed.']}
+
+    @staticmethod
+    def _try_pymupdf(file_buffer, filename):
+        pdf_bytes = file_buffer.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = "".join(f"\n=== Page {i+1} ===\n{page.get_text()}" for i, page in enumerate(doc))
+        doc.close()
+        return {'success': bool(text.strip()), 'text': text, 'method': 'PyMuPDF', 'errors': []}
+
+    @staticmethod
+    def _try_pdfplumber(file_buffer, filename):
+        with pdfplumber.open(file_buffer) as pdf:
+            text = "".join(f"\n=== Page {i+1} ===\n{page.extract_text()}" for i, page in enumerate(pdf.pages) if page.extract_text())
+        return {'success': bool(text.strip()), 'text': text, 'method': 'pdfplumber', 'errors': []}
+
+    @staticmethod
+    def _try_pypdf2(file_buffer, filename):
+        reader = PyPDF2.PdfReader(file_buffer)
+        text = ""
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text()
+            if page_text: text += f"\n=== Page {i+1} ===\n{page_text}"
+        return {'success': bool(text.strip()), 'text': text, 'method': 'PyPDF2', 'errors': []}
     
     @staticmethod
-    def extract_text(file_buffer, filename): [cite: 3]
-        """Extract text using all available methods"""
-        results = {
-            'filename': filename,
-            'success': False,
-            'text': '',
-            'method': 'none',
-            'page_count': 0,
-            'errors': [] [cite: 4]
-        }
-        
-        # Ensure we're at the start of the file
-        file_buffer.seek(0)
-        
-        # Method 1: PyMuPDF (best for complex PDFs)
-        if PYMUPDF_AVAILABLE:
+    def _try_raw_extraction(file_buffer, filename):
+        pdf_content = file_buffer.read()
+        text_pattern = rb'stream\s*\n(.*?)\nendstream'
+        matches = re.findall(text_pattern, pdf_content, re.DOTALL)
+        decoded_text = []
+        for match in matches:
             try:
-                logger.info(f"Trying PyMuPDF for {filename}") [cite: 5]
-                import fitz
-                
-                file_buffer.seek(0)
-                pdf_bytes = file_buffer.read()
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                
-                text = ""
-                results['page_count'] = len(doc)
-                
-                for page_num in range(len(doc)):
-                    page = doc[page_num] [cite: 7]
-                    page_text = page.get_text()
-                    if page_text:
-                        text += f"\n=== Page {page_num + 1} ===\n{page_text}"
-                
-                doc.close() [cite: 8]
-                
-                if text.strip():
-                    results['text'] = text.strip()
-                    results['method'] = 'PyMuPDF'
-                    results['success'] = True [cite: 9]
-                    logger.info(f"PyMuPDF extracted {len(text)} chars from {filename}")
-                    return results
-                    
-            except Exception as e:
-                results['errors'].append(f"PyMuPDF: {str(e)}") [cite: 10]
-                logger.warning(f"PyMuPDF failed for {filename}: {e}")
-        
-        # Method 2: pdfplumber
-        if PDFPLUMBER_AVAILABLE:
-            try:
-                logger.info(f"Trying pdfplumber for {filename}")
-                file_buffer.seek(0) [cite: 11]
-                
-                with pdfplumber.open(file_buffer) as pdf:
-                    text = ""
-                    results['page_count'] = len(pdf.pages)
-                    
-                    for i, page in enumerate(pdf.pages):
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += f"\n=== Page {i + 1} ===\n{page_text}" [cite: 13]
-                    
-                    if text.strip():
-                        results['text'] = text.strip()
-                        results['method'] = 'pdfplumber' [cite: 14]
-                        results['success'] = True
-                        logger.info(f"pdfplumber extracted {len(text)} chars from {filename}")
-                        return results
-                        
-            except Exception as e:
-                results['errors'].append(f"pdfplumber: {str(e)}")
-                logger.warning(f"pdfplumber failed for {filename}: {e}")
-        
-        # Method 3: PyPDF2 (always available)
-        try:
-            logger.info(f"Trying PyPDF2 for {filename}") [cite: 16]
-            file_buffer.seek(0)
-            
-            reader = PyPDF2.PdfReader(file_buffer)
-            text = ""
-            results['page_count'] = len(reader.pages)
-            
-            for i, page in enumerate(reader.pages):
-                try: [cite: 17]
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"\n=== Page {i + 1} ===\n{page_text}"
-                except Exception as e: [cite: 18]
-                    results['errors'].append(f"PyPDF2 page {i+1}: {str(e)}")
-            
-            if text.strip():
-                results['text'] = text.strip()
-                results['method'] = 'PyPDF2'
-                results['success'] = True [cite: 19]
-                logger.info(f"PyPDF2 extracted {len(text)} chars from {filename}")
-                return results
-                
-        except Exception as e:
-            results['errors'].append(f"PyPDF2: {str(e)}")
-            logger.error(f"PyPDF2 failed for {filename}: {e}") [cite: 20]
-        
-        # Method 4: Raw text search in PDF bytes
-        try:
-            logger.info(f"Trying raw text extraction for {filename}")
-            file_buffer.seek(0)
-            pdf_content = file_buffer.read()
-            
-            # Look for text between stream markers
-            text_pattern = rb'stream\s*\n(.*?)\nendstream' [cite: 21]
-            matches = re.findall(text_pattern, pdf_content, re.DOTALL)
-            
-            decoded_text = []
-            for match in matches:
-                try:
-                    # Try to decode as UTF-8
-                    decoded = match.decode('utf-8', errors='ignore') [cite: 22]
-                    # Keep only printable characters
-                    clean = ''.join(c for c in decoded if c.isprintable() or c.isspace())
-                    if len(clean) > 10:  # Minimum meaningful text [cite: 23]
-                        decoded_text.append(clean)
-                except:
-                    pass
-            
-            if decoded_text: [cite: 24]
-                results['text'] = '\n'.join(decoded_text)
-                results['method'] = 'raw_extraction'
-                results['success'] = True
-                logger.info(f"Raw extraction got {len(results['text'])} chars from {filename}")
-                
-        except Exception as e:
-            results['errors'].append(f"Raw extraction: {str(e)}")
-            logger.error(f"Raw extraction failed for {filename}: {e}")
-        
-        return results
+                decoded = match.decode('utf-8', errors='ignore')
+                clean = ''.join(c for c in decoded if c.isprintable() or c.isspace())
+                if len(clean.strip()) > 20: decoded_text.append(clean)
+            except: pass
+        text = "\n".join(decoded_text)
+        return {'success': bool(text.strip()), 'text': text, 'method': 'Raw Bytes', 'errors': []}
+
 
 class DocumentIdentifier:
-    """Identify document type and extract key information"""
-    
+    """Identifies document type and extracts key information using rules."""
     @staticmethod
     def identify(filename, text):
-        """Identify document type and extract metadata"""
-        info = {
-            'type': 'Unknown',
-            'subtype': '',
-            'confidence': 0,
-            'detected_elements': [],
-            'product_hints': []
-        } [cite: 26]
+        info = {'type': 'Unknown', 'detected_elements': [], 'product_hints': []}
+        text_lower = text.lower()
         
-        filename_lower = filename.lower()
-        text_lower = text.lower() if text else "" [cite: 27]
+        type_rules = {
+            'Packaging Artwork': {'keywords': ['packaging', 'package', 'artwork', 'box'], 'content': ['distributed by']},
+            'Wash Tag / Care Label': {'keywords': ['wash', 'tag', 'care', 'label'], 'content': ['polyester', 'machine wash']},
+            'Quick Start Guide': {'keywords': ['quick', 'start', 'guide', 'qsg'], 'content': ['instructions', 'how to']},
+            'Shipping Mark': {'keywords': ['shipping', 'ship', 'mark'], 'content': ['carton', 'qty']},
+            'User Manual': {'keywords': ['manual', 'instruction'], 'content': ['warranty', 'table of contents']}
+        }
         
-        # Document type detection rules
-        type_rules = [
-            # Wash tags / Care labels
-            {
-                'keywords': ['wash', 'tag', 'care', 'label', 'washtag'],
-                'content': ['polyester', 'machine wash', 'wash cold', 'tumble dry', 'material'], [cite: 28]
-                'type': 'Wash Tag / Care Label'
-            },
-            # Packaging artwork
-            {
-                'keywords': ['packaging', 'package', 'artwork', 'box'],
-                'content': ['wheelchair bag', 'vive health', 'distributed by'], [cite: 29]
-                'type': 'Packaging Artwork'
-            },
-            # Quick start guides
-            {
-                'keywords': ['quick', 'start', 'guide', 'qsg'],
-                'content': ['instructions', 'step 1', 'application', 'how to'], [cite: 30]
-                'type': 'Quick Start Guide'
-            },
-            # Shipping marks
-            {
-                'keywords': ['shipping', 'ship', 'mark'],
-                'content': ['shipping mark', 'carton', 'qty'], [cite: 31]
-                'type': 'Shipping Mark'
-            },
-            # Manuals
-            {
-                'keywords': ['manual', 'instruction', 'user guide'],
-                'content': ['table of contents', 'chapter', 'warranty'], [cite: 32]
-                'type': 'User Manual'
-            }
-        ]
+        # Simple keyword-based type detection
+        for doc_type, rules in type_rules.items():
+            if any(k in filename.lower() for k in rules['keywords']) or any(c in text_lower for c in rules['content']):
+                info['type'] = doc_type
+                break
+
+        # Extract specific elements
+        if 'made in china' in text_lower: info['detected_elements'].append('Made in China')
+        if 'vive' in text_lower: info['detected_elements'].append('Vive Branding')
         
-        # Check each rule
-        best_score = 0
-        for rule in type_rules:
-            score = 0 [cite: 33]
-            
-            # Check filename
-            for keyword in rule['keywords']:
-                if keyword in filename_lower:
-                    score += 50
-            
-            # Check content
-            for keyword in rule['content']: [cite: 34]
-                if keyword in text_lower:
-                    score += 30
-            
-            if score > best_score:
-                best_score = score [cite: 35]
-                info['type'] = rule['type']
-                info['confidence'] = score
-        
-        # Extract key elements
-        if text:
-            # Check for Made in China
-            if 'made in china' in text_lower: [cite: 36]
-                info['detected_elements'].append('Made in China')
-            
-            # Check for Vive branding
-            if 'vive' in text_lower:
-                info['detected_elements'].append('Vive Branding')
-            if 'vive®' in text or 'vive®' in text_lower: [cite: 37]
-                    info['detected_elements'].append('Vive® Trademark')
-            
-            # Check for website
-            websites = re.findall(r'(?:www\.)?vivehealth\.com|vhealth\.link/\w+', text_lower)
-            if websites:
-                info['detected_elements'].append(f'Website: {websites[0]}') [cite: 38]
-            
-            # Extract SKUs
-            sku_patterns = [
-                r'LVA\d{4}[A-Z]{0,3}',
-                r'SUP\d{4}[A-Z]{0,3}',
-                r'MOB\d{4}[A-Z]{0,3}',
-                r'[A-Z]{3}\d{4}[A-Z]{0,3}' [cite: 39]
-            ]
-            
-            for pattern in sku_patterns:
-                skus = re.findall(pattern, text.upper())
-                if skus:
-                    info['detected_elements'].append(f'SKU: {skus[0]}') [cite: 40]
-                    break
-            
-            # Detect product hints
-            if 'wheelchair bag' in text_lower:
-                info['product_hints'].append('Wheelchair Bag')
-                if 'advanced' in text_lower: [cite: 41]
-                    info['product_hints'].append('Wheelchair Bag Advanced')
-            
-            # Detect color variants
-            colors = ['black', 'purple', 'blue', 'red', 'floral']
-            for color in colors:
-                if color in text_lower: [cite: 42]
-                    info['product_hints'].append(f'Color: {color.title()}')
+        websites = re.findall(r'vivehealth\.com|vhealth\.link/\w+', text_lower)
+        if websites: info['detected_elements'].append(f"Website: {websites[0]}")
+
+        skus = re.findall(r'[A-Z]{3}\d{4}[A-Z]{0,3}', text.upper())
+        if skus: info['detected_elements'].append(f"SKU: {skus[0]}")
+
+        if 'wheelchair bag' in text_lower: info['product_hints'].append('Wheelchair Bag')
         
         return info
 
+
 class Validator:
-    """Validate documents against Vive Health requirements"""
-    
+    """Validates documents against Vive Health requirements."""
     @staticmethod
-    def validate(filename, text, doc_info):
-        """Comprehensive validation"""
-        validation = {
-            'filename': filename,
-            'status': 'FAIL', [cite: 43]
-            'score': 0,
-            'checks': {},
-            'issues': [],
-            'warnings': [],
-            'suggestions': []
-        }
-        
-        if not text: [cite: 44]
-            validation['issues'].append('No text could be extracted from PDF')
-            validation['suggestions'].append('Ensure PDF contains searchable text, not just images')
-            return validation
-        
+    def validate(text, doc_info):
+        results = {'status': 'FAIL', 'issues': [], 'warnings': []}
+        if not text:
+            results['issues'].append('No text could be extracted for validation.')
+            return results
+
         text_lower = text.lower()
-        
-        # Universal requirements (all documents)
-        universal_checks = {
-            'made_in_china': {
-                'check': 'made in china' in text_lower,
-                'issue': 'Missing "Made in China" text',
-                'critical': True
-            }, [cite: 45]
-            'vive_branding': {
-                'check': 'vive' in text_lower, [cite: 46]
-                'issue': 'Missing Vive branding',
-                'critical': True
-            },
-            'website': {
-                'check': 'vivehealth.com' in text_lower or 'vhealth.link' in text_lower,
-                'issue': 'Missing website URL', [cite: 47]
-                'critical': False
-            },
-            'contact_info': {
-                'check': bool(re.search(r'\d{3}[-.]?\d{3}[-.]?\d{4}|service@vivehealth\.com', text_lower)),
-                'issue': 'Missing contact information',
-                'critical': False [cite: 48]
-            }
-        }
-        
-        # Check universal requirements
-        for check_name, check_data in universal_checks.items():
-            validation['checks'][check_name] = check_data['check']
-            if not check_data['check']:
-                if check_data['critical']: [cite: 49]
-                    validation['issues'].append(check_data['issue'])
-                else:
-                    validation['warnings'].append(check_data['issue'])
-            else:
-                validation['score'] += 20
-        
-        # Document-specific validation
-        doc_type = doc_info.get('type', 'Unknown')
-        
-        if doc_type == 'Wash Tag / Care Label':
-            # Check materials
-            if any(x in text_lower for x in ['polyester', 'cotton', 'nylon', 'pvc', 'ldpe']):
-                validation['checks']['materials'] = True [cite: 51]
-                validation['score'] += 10
-            else:
-                validation['warnings'].append('No material composition found')
-            
-            # Check care instructions
-            if any(x in text_lower for x in ['machine wash', 'hand wash', 'dry clean']): [cite: 52]
-                validation['checks']['care_instructions'] = True
-                validation['score'] += 10
-            else:
-                validation['issues'].append('Missing care instructions')
-        
-        elif doc_type == 'Packaging Artwork':
-            # Check for SKU
-            if any('SKU:' in elem for elem in doc_info.get('detected_elements', [])): [cite: 53]
-                validation['checks']['sku_visible'] = True
-                validation['score'] += 10
-            else:
-                validation['warnings'].append('SKU not clearly visible')
-            
-            # Check for product name
-            if doc_info.get('product_hints'):
-                validation['checks']['product_identified'] = True
-                validation['score'] += 10
-        
-        elif doc_type == 'Quick Start Guide':
-            # Check for instructions
-            if any(x in text_lower for x in ['step', 'instruction', 'attach', 'install']): [cite: 55]
-                validation['checks']['has_instructions'] = True
-                validation['score'] += 10
-            else:
-                validation['issues'].append('No clear instructions found')
-        
-        # Calculate final status
-        critical_issues = [iss for iss in validation['issues'] if any(
-            crit in iss for crit in ['Made in China', 'Vive branding']
-        )]
-        
-        if validation['score'] >= 80 and not critical_issues:
-            validation['status'] = 'PASS'
-        elif validation['score'] >= 50 or (validation['score'] >= 30 and not critical_issues): [cite: 57]
-            validation['status'] = 'NEEDS REVIEW'
-        else:
-            validation['status'] = 'FAIL'
-        
-        # Add suggestions based on issues
-        if 'Made in China' in ' '.join(validation['issues']):
-            validation['suggestions'].append('Add "Made in China" text to the document') [cite: 58]
-        
-        if 'Vive branding' in ' '.join(validation['issues']):
-            validation['suggestions'].append('Include Vive or vive® branding prominently')
-        
-        return validation
+        # Define checks: (condition, issue_message, is_critical)
+        checks = [
+            ('made in china' in text_lower, 'Missing "Made in China" text', True),
+            ('vive' in text_lower, 'Missing Vive branding', True),
+            ('vivehealth.com' in text_lower or 'vhealth.link' in text_lower, 'Missing website URL', False),
+            (bool(re.search(r'\d{3}[-.]?\d{3}[-.]?\d{4}|service@vivehealth\.com', text_lower)), 'Missing contact info', False),
+        ]
 
-def get_api_config():
-    """Get API configuration"""
-    api_key = None
-    api_type = None
-    
-    if hasattr(st, 'secrets'):
-        if 'OPENAI_API_KEY' in st.secrets and OPENAI_AVAILABLE: [cite: 59]
-            api_key = st.secrets['OPENAI_API_KEY']
-            api_type = 'openai'
-        elif 'ANTHROPIC_API_KEY' in st.secrets and CLAUDE_AVAILABLE:
-            api_key = st.secrets['ANTHROPIC_API_KEY']
-            api_type = 'claude'
-    
-    return api_type, api_key
+        # Run checks
+        for condition, issue, is_critical in checks:
+            if not condition:
+                if is_critical: results['issues'].append(issue)
+                else: results['warnings'].append(issue)
 
-def get_ai_review(text, doc_info, validation_result, api_type, api_key):
-    """Get AI review of the document"""
-    if not api_key or not text: [cite: 60]
-        return None
-    
-    prompt = f"""Review this Vive Health packaging document:
-
-Document Type: {doc_info.get('type')}
-Detected Elements: {', '.join(doc_info.get('detected_elements', []))}
-Validation Status: {validation_result.get('status')}
-Issues Found: {', '.join(validation_result.get('issues', []))}
-
-Document excerpt:
-{text[:1000]}
-
-Provide:
-1. Confirm what product this is for
-2. List any critical compliance issues
-3. Suggest specific improvements
-Keep response under 200 words."""
-
-    try:
-        if api_type == 'openai' and OPENAI_AVAILABLE:
-            import openai
-            client = openai.OpenAI(api_key=api_key) [cite: 61]
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
-                temperature=0.3
-            )
-            return response.choices[0].message.content [cite: 62]
+        # Determine final status
+        if not results['issues']:
+            results['status'] = 'NEEDS REVIEW'
+            if not results['warnings']:
+                results['status'] = 'PASS'
         
-        elif api_type == 'claude' and CLAUDE_AVAILABLE:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
-                model="claude-3-haiku-20240307",
-                messages=[{"role": "user", "content": prompt}], [cite: 63]
-                max_tokens=300,
-                temperature=0.3
-            )
-            return response.content[0].text
-            
-    except Exception as e:
-        logger.error(f"AI review failed: {e}")
-        return None [cite: 64]
+        return results
 
-def main():
-    # Header
+class AIReviewer:
+    """Handles interaction with AI models for analysis."""
+    @staticmethod
+    def get_api_config():
+        if hasattr(st, 'secrets'):
+            if 'OPENAI_API_KEY' in st.secrets and OPENAI_AVAILABLE:
+                return 'openai', st.secrets['OPENAI_API_KEY']
+            if 'ANTHROPIC_API_KEY' in st.secrets and CLAUDE_AVAILABLE:
+                return 'claude', st.secrets['ANTHROPIC_API_KEY']
+        return None, None
+
+    @staticmethod
+    def get_review(text, doc_info, validation_result, api_type, api_key):
+        if not api_key or not text: return "AI review not available."
+
+        prompt = f"""As a Vive Health QC expert, briefly review this document.
+- Document Type: {doc_info.get('type')}
+- Key Findings: {', '.join(doc_info.get('detected_elements', ['None']))}
+- Initial Status: {validation_result.get('status')}
+- Issues: {', '.join(validation_result.get('issues', ['None']))}
+
+Document Excerpt:
+---
+{text[:1500]}
+---
+Based on the text, provide a 1-2 sentence summary confirming the product, a bulleted list of critical issues you see (if any), and one key suggestion for improvement."""
+        
+        try:
+            if api_type == 'openai':
+                client = openai.OpenAI(api_key=api_key)
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=300, temperature=0.2
+                )
+                return response.choices[0].message.content
+            elif api_type == 'claude':
+                client = anthropic.Anthropic(api_key=api_key)
+                response = client.messages.create(
+                    model="claude-3.5-sonnet-20240620", # Using the latest model
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=300, temperature=0.2
+                )
+                return response.content[0].text
+        except Exception as e:
+            logger.error(f"AI review failed: {e}")
+            return f"An error occurred during AI review: {e}"
+        return "AI model not available."
+
+
+# --- UI and Main Application ---
+def render_ui():
+    """Renders the Streamlit user interface."""
     st.markdown("""
     <style>
-    .main-header {
-        background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
-        padding: 2rem; [cite: 65]
-        border-radius: 10px;
-        color: white;
-        margin-bottom: 2rem;
-    }
-    .status-pass { background-color: #d4edda; color: #155724; padding: 0.5rem; border-radius: 5px; } [cite: 66]
-    .status-fail { background-color: #f8d7da; color: #721c24; padding: 0.5rem; border-radius: 5px; } [cite: 67]
-    .status-review { background-color: #fff3cd; color: #856404; padding: 0.5rem; border-radius: 5px; } [cite: 68]
+        .main-header { background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%); padding: 2rem; border-radius: 10px; color: white; margin-bottom: 2rem; text-align: center; }
+        .status-pass { border-left: 5px solid #28a745; padding: 1rem; background-color: #f0fff4; border-radius: 5px; margin-bottom: 1rem; }
+        .status-fail { border-left: 5px solid #dc3545; padding: 1rem; background-color: #fff5f5; border-radius: 5px; margin-bottom: 1rem; }
+        .status-review { border-left: 5px solid #ffc107; padding: 1rem; background-color: #fffbeb; border-radius: 5px; margin-bottom: 1rem; }
     </style>
-    
     <div class="main-header">
-        <h1>🏥 Vive Health Packaging Validator</h1>
-        <p>Production-Ready Document Validation System</p>
+        <h1>🏥 Vive Health Production Validator</h1>
+        <p>Upload documents for automated compliance and AI-powered review.</p>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Get API config
-    api_type, api_key = get_api_config()
-    
-    # Sidebar
+
     with st.sidebar:
         st.markdown("### 🔧 System Status")
+        readers = ["PyPDF2 (Fallback)"]
+        if PDFPLUMBER_AVAILABLE: readers.insert(0, "pdfplumber")
+        if PYMUPDF_AVAILABLE: readers.insert(0, "PyMuPDF (Preferred)")
+        st.success("PDF Readers Available:\n" + "\n".join(f"- {r}" for r in readers))
         
-        # PDF readers
-        readers = ["✅ PyPDF2 (primary)"] [cite: 69]
-        if PDFPLUMBER_AVAILABLE:
-            readers.append("✅ pdfplumber")
-        if PYMUPDF_AVAILABLE:
-            readers.append("✅ PyMuPDF")
-        
-        st.success("PDF Readers:\n" + "\n".join(readers))
-        
-        # AI status
-        if api_key: [cite: 70]
-            st.success(f"✅ AI Review ({api_type})")
-        else:
-            st.info("ℹ️ AI Review not configured")
-        
+        api_type, api_key = AIReviewer.get_api_config()
+        if api_key: st.success(f"AI Review Enabled ({api_type.capitalize()})")
+        else: st.warning("AI Review Disabled (No API Key)")
+
         st.markdown("---")
-        st.markdown("### 📋 Validation Checks")
-        st.markdown("""
-        **Critical Requirements:**
-        - Made in China [cite: 71]
-        - Vive branding [cite: 71]
-        
-        **Standard Requirements:**
-        - Website URL
-        - Contact information
-        - Product identification
-        
-        **Document-Specific:**
-        - Materials (wash tags)
-        - Care instructions
-        - SKU visibility [cite: 72]
-        - Setup instructions [cite: 72]
-        """)
+        st.info("Upload one or more PDFs, then click 'Validate All' to begin the analysis.")
+
+def main():
+    render_ui()
     
-    # Main content
+    # Initialize session state for storing results between runs
+    if 'results' not in st.session_state:
+        st.session_state.results = {}
+
     st.markdown("### 📤 Upload Packaging Documents")
-    
     uploaded_files = st.file_uploader(
-        "Select PDF files for validation",
-        type=['pdf'],
-        accept_multiple_files=True,
+        "Select PDF files for validation", type=['pdf'], accept_multiple_files=True,
         help="Upload any Vive Health packaging, labels, or documentation"
     )
-    
+
     if uploaded_files:
         if st.button("🚀 Validate All Documents", type="primary", use_container_width=True):
+            st.session_state.results = {} # Clear previous results
+            api_type, api_key = AIReviewer.get_api_config()
+            progress_bar = st.progress(0, "Starting validation...")
+
+            for i, file in enumerate(uploaded_files):
+                filename = file.name
+                progress_bar.progress((i + 1) / len(uploaded_files), f"Processing: {filename}")
+                
+                # Process each file and store results
+                extraction = PDFExtractor.extract_text(file, filename)
+                if not extraction['success']:
+                    st.session_state.results[filename] = {'error': extraction['errors'][0]}
+                    continue
+
+                doc_info = DocumentIdentifier.identify(filename, extraction['text'])
+                validation = Validator.validate(extraction['text'], doc_info)
+                ai_review = AIReviewer.get_review(extraction['text'], doc_info, validation, api_type, api_key)
+                
+                st.session_state.results[filename] = {
+                    'extraction': extraction, 'doc_info': doc_info,
+                    'validation': validation, 'ai_review': ai_review
+                }
+            progress_bar.empty()
+
+    if st.session_state.results:
+        st.markdown("---")
+        st.markdown("## 📊 Validation Results")
+
+        for filename, result in st.session_state.results.items():
+            st.markdown(f"### {filename}")
+
+            if 'error' in result:
+                st.error(f"**Could not process file:** {result['error']}")
+                continue
+
+            status = result['validation']['status']
+            status_class = f"status-{status.lower().replace(' ', '_')}"
             
-            # Process each file
-            for file in uploaded_files:
-                st.markdown("---")
+            with st.container():
+                st.markdown(f'<div class="{status_class}">', unsafe_allow_html=True)
+                st.subheader(f"Status: {status}")
                 
-                # Create columns for real-time status
-                col1, col2 = st.columns([3, 1]) [cite: 74]
-                
+                col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown(f"### 📄 {file.name}")
+                    st.markdown(f"**Document Type:** {result['doc_info']['type']}")
+                    st.markdown(f"**Extraction Method:** {result['extraction']['method']}")
+                    if result['doc_info']['detected_elements']:
+                        st.markdown("**Key Elements Found:**")
+                        for elem in result['doc_info']['detected_elements']:
+                            st.markdown(f"- `{elem}`")
                 
                 with col2:
-                    status_placeholder = st.empty()
-                    status_placeholder.info("⏳ Processing...")
-                
-                # Extract text
-                with st.spinner(f"Reading {file.name}..."): [cite: 76]
-                    extraction_result = PDFExtractor.extract_text(file, file.name)
-                
-                # Show extraction results
-                if extraction_result['success']:
-                    st.success(f"✅ Text extracted successfully using {extraction_result['method']} ({len(extraction_result['text'])} characters)") [cite: 77]
-                    
-                    # Show text preview
-                    with st.expander("📝 View Extracted Text"):
-                        st.text_area("Text Preview", extraction_result['text'][:1000] + "...", height=200) [cite: 78]
-                else:
-                    st.error("❌ Could not extract text automatically")
-                    
-                    # Show errors
-                    if extraction_result['errors']: [cite: 79]
-                        with st.expander("🔍 Technical Details"):
-                            for error in extraction_result['errors']:
-                                st.text(error) [cite: 80]
-                    
-                    # Manual input option
-                    st.warning("📝 You can manually input the text content below:")
-                    manual_text = st.text_area( [cite: 81]
-                        "Paste the document text here:",
-                        key=f"manual_{file.name}",
-                        height=200,
-                        placeholder="Copy and paste the text from your PDF here..." [cite: 82]
-                    )
-                    
-                    if manual_text:
-                        extraction_result['text'] = manual_text [cite: 83]
-                        extraction_result['success'] = True
-                        extraction_result['method'] = 'manual_input'
-                        st.success("✅ Manual text input received")
-                
-                # Only proceed if we have text
-                if extraction_result['success'] and extraction_result['text']: [cite: 84]
-                    
-                    # Identify document
-                    with st.spinner("Identifying document type..."): [cite: 85]
-                        doc_info = DocumentIdentifier.identify(file.name, extraction_result['text'])
-                    
-                    # Document info
-                    info_col1, info_col2 = st.columns(2)
-                    
-                    with info_col1:
-                        st.info(f"📋 Document Type: **{doc_info['type']}**")
-                        if doc_info['product_hints']:
-                            st.info(f"🏷️ Product: **{', '.join(doc_info['product_hints'])}**") [cite: 87]
-                    
-                    with info_col2:
-                        if doc_info['detected_elements']:
-                            st.success(f"✅ Found: {', '.join(doc_info['detected_elements'][:3])}") [cite: 88]
-                    
-                    # Validate
-                    with st.spinner("Running validation checks..."):
-                        validation_result = Validator.validate( [cite: 89]
-                            file.name, 
-                            extraction_result['text'], 
-                            doc_info
-                        ) [cite: 90]
-                    
-                    # Update status
-                    if validation_result['status'] == 'PASS':
-                        status_placeholder.markdown('<div class="status-pass">✅ PASSED</div>', unsafe_allow_html=True) [cite: 91]
-                    elif validation_result['status'] == 'FAIL':
-                        status_placeholder.markdown('<div class="status-fail">❌ FAILED</div>', unsafe_allow_html=True)
-                    else:
-                        status_placeholder.markdown('<div class="status-review">⚠️ NEEDS REVIEW</div>', unsafe_allow_html=True) [cite: 92]
-                    
-                    # Show validation results
-                    val_col1, val_col2 = st.columns(2)
-                    
-                    with val_col1: [cite: 93]
-                        st.markdown("**✅ Checks Passed:**")
-                        for check, passed in validation_result['checks'].items():
-                            if passed:
-                                st.success(f"✓ {check.replace('_', ' ').title()}") [cite: 94]
-                    
-                    with val_col2:
-                        if validation_result['issues']:
-                            st.markdown("**❌ Critical Issues:**") [cite: 95]
-                            for issue in validation_result['issues']:
-                                st.error(f"✗ {issue}")
-                        
-                        if validation_result['warnings']:
-                            st.markdown("**⚠️ Warnings:**")
-                            for warning in validation_result['warnings']:
-                                st.warning(f"! {warning}") [cite: 98]
-                    
-                    # AI Review (if available)
-                    if api_key:
-                        with st.spinner("Getting AI review..."):
-                            ai_review = get_ai_review( [cite: 99]
-                                extraction_result['text'],
-                                doc_info,
-                                validation_result, [cite: 100]
-                                api_type,
-                                api_key
-                            ) [cite: 101]
-                        
-                        if ai_review:
-                            st.markdown("**🤖 AI Review:**")
-                            st.info(ai_review) [cite: 102]
-                    
-                    # Suggestions
-                    if validation_result['suggestions']:
-                        st.markdown("**💡 Suggestions for Improvement:**") [cite: 103]
-                        for suggestion in validation_result['suggestions']:
-                            st.markdown(f"• {suggestion}")
-                    
-                    # Store results
-                    st.session_state.validation_results[file.name] = { [cite: 104]
-                        'extraction': extraction_result,
-                        'doc_info': doc_info,
-                        'validation': validation_result, [cite: 105]
-                        'ai_review': ai_review if api_key else None
-                    }
-                
-                else:
-                    status_placeholder.error("❌ No text available") [cite: 106]
-                    st.error("Cannot validate without text content. Please provide manual input above.") [cite: 107]
-            
-            # Summary section
-            if st.session_state.validation_results:
-                st.markdown("---")
-                st.markdown("## 📊 Validation Summary")
-                
-                # Calculate totals
-                total = len(st.session_state.validation_results) [cite: 108]
-                passed = sum(1 for r in st.session_state.validation_results.values() 
-                           if r['validation']['status'] == 'PASS')
-                failed = sum(1 for r in st.session_state.validation_results.values() 
-                           if r['validation']['status'] == 'FAIL') [cite: 109]
-                review = total - passed - failed
-                
-                # Display metrics
-                metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4) [cite: 110]
-                
-                with metric_col1:
-                    st.metric("Total Files", total)
-                
-                with metric_col2: [cite: 111]
-                    st.metric("Passed", passed)
-                
-                with metric_col3:
-                    st.metric("Failed", failed)
-                
-                with metric_col4: [cite: 112]
-                    st.metric("Needs Review", review)
-                
-                # Export results
-                st.markdown("### 💾 Export Results")
-                
-                # Prepare export data
-                export_data = {
-                    'timestamp': datetime.now().isoformat(),
-                    'summary': {
-                        'total_files': total, [cite: 114]
-                        'passed': passed,
-                        'failed': failed,
-                        'needs_review': review
-                    },
-                    'details': {} [cite: 115]
-                }
-                
-                for filename, results in st.session_state.validation_results.items():
-                    export_data['details'][filename] = {
-                        'document_type': results['doc_info']['type'], [cite: 116]
-                        'detected_elements': results['doc_info']['detected_elements'],
-                        'validation_status': results['validation']['status'],
-                        'issues': results['validation']['issues'],
-                        'warnings': results['validation']['warnings'], [cite: 117]
-                        'ai_review': results.get('ai_review', 'N/A')
-                    }
-                
-                # Download button
-                st.download_button( [cite: 118]
-                    label="📥 Download Validation Report (JSON)",
-                    data=json.dumps(export_data, indent=2),
-                    file_name=f"vive_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json" [cite: 119]
-                )
+                    if result['validation']['issues']:
+                        st.error("**Critical Issues:**")
+                        for issue in result['validation']['issues']: st.markdown(f"- {issue}")
+                    if result['validation']['warnings']:
+                        st.warning("**Warnings:**")
+                        for warning in result['validation']['warnings']: st.markdown(f"- {warning}")
+
+                if result['ai_review']:
+                    with st.expander("🤖 View AI-Powered Review", expanded=(status != 'PASS')):
+                        st.info(result['ai_review'])
+
+                st.markdown('</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
