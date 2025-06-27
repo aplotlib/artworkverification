@@ -26,9 +26,20 @@ except ImportError:
     CHARDET_AVAILABLE = False
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.WARNING,  # Set root logger to WARNING to reduce noise
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO)  # Our logger stays at INFO level
+
+# Suppress debug messages for PDF internals
+logging.getLogger('PyPDF2').setLevel(logging.WARNING)
+logging.getLogger('pdfplumber').setLevel(logging.WARNING)
+logging.getLogger('PIL').setLevel(logging.WARNING)  # Also suppress PIL warnings if present
 
 # Page config
 st.set_page_config(
@@ -280,8 +291,9 @@ def extract_text_from_pdf(file_bytes):
     if not extracted_text.strip() and PYMUPDF_AVAILABLE:
         try:
             import fitz
-            pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
             file_bytes.seek(0)  # Reset stream position
+            pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
+            file_bytes.seek(0)  # Reset stream position again
             
             for page_num in range(len(pdf_document)):
                 page = pdf_document[page_num]
@@ -313,9 +325,9 @@ def extract_text_from_pdf(file_bytes):
                 method_used = "PyPDF2"
                 logger.info(f"Successfully extracted text using PyPDF2: {len(extracted_text)} chars")
         except Exception as e:
-            logger.error(f"PyPDF2 extraction failed: {e}")
+            logger.warning(f"PyPDF2 extraction failed: {e}")
     
-    # Clean up extracted text
+    # Clean up extracted text if we got any
     if extracted_text.strip():
         # Remove excessive whitespace
         extracted_text = re.sub(r'\s+', ' ', extracted_text)
@@ -324,8 +336,12 @@ def extract_text_from_pdf(file_bytes):
         # Remove excessive newlines
         extracted_text = re.sub(r'\n+', '\n', extracted_text)
         
-        logger.info(f"Text extracted using {method_used}: {len(extracted_text)} chars")
-        return extracted_text.strip(), method_used
+        clean_text = extracted_text.strip()
+        logger.info(f"Text successfully extracted using {method_used}: {len(clean_text)} chars")
+        return clean_text, method_used
+    
+    # Only check for image-based PDF if no text was extracted
+    logger.info("No text extracted from any method, checking if PDF is image-based...")
     
     # If no text was extracted, check if it's an image-based PDF
     try:
@@ -335,39 +351,59 @@ def extract_text_from_pdf(file_bytes):
         
         # Check if PDF has images (with better error handling)
         has_images = False
+        image_count = 0
+        
         try:
-            for page in pdf_reader.pages:
+            for page_idx, page in enumerate(pdf_reader.pages):
                 try:
-                    resources = page.get('/Resources', {})
-                    if resources and hasattr(resources, 'get'):
-                        xobject = resources.get('/XObject', {})
-                        if xobject and hasattr(xobject, 'get_object'):
-                            xobject_dict = xobject.get_object()
-                            if isinstance(xobject_dict, dict):
-                                for obj in xobject_dict:
-                                    try:
-                                        if hasattr(xobject_dict[obj], 'get') and xobject_dict[obj].get('/Subtype') == '/Image':
-                                            has_images = True
-                                            break
-                                    except:
-                                        continue
+                    # Get resources safely
+                    resources = page.get('/Resources')
+                    if not resources:
+                        continue
+                    
+                    # Resolve IndirectObject if needed
+                    if hasattr(resources, 'get_object'):
+                        resources = resources.get_object()
+                    
+                    # Get XObject
+                    xobject = None
+                    if isinstance(resources, dict) and '/XObject' in resources:
+                        xobject = resources['/XObject']
+                        if hasattr(xobject, 'get_object'):
+                            xobject = xobject.get_object()
+                    
+                    # Check for images in XObject
+                    if xobject and isinstance(xobject, dict):
+                        for obj_name in xobject:
+                            try:
+                                obj = xobject[obj_name]
+                                if hasattr(obj, 'get_object'):
+                                    obj = obj.get_object()
+                                
+                                if isinstance(obj, dict) and obj.get('/Subtype') == '/Image':
+                                    has_images = True
+                                    image_count += 1
+                            except Exception:
+                                # Skip problematic objects
+                                continue
+                    
                 except Exception as e:
-                    logger.debug(f"Error checking page resources: {e}")
+                    # Skip problematic pages
+                    logger.debug(f"Skipping page {page_idx} due to error: {type(e).__name__}")
                     continue
-                
-                if has_images:
-                    break
+        
         except Exception as e:
-            logger.debug(f"Error during image detection: {e}")
+            logger.debug(f"Error during image detection: {type(e).__name__}")
         
         if has_images:
+            logger.info(f"Found {image_count} images in PDF with {num_pages} pages")
             return "[Image-based PDF detected - text extraction not possible. Please use text-based PDFs or enable OCR]", "error"
         else:
             return f"[No text could be extracted from PDF - {num_pages} pages found but no readable content]", "error"
             
     except Exception as e:
-        logger.error(f"PDF analysis error: {e}")
-        return f"[No text could be extracted from PDF - please check file format]", "error"
+        logger.warning(f"Could not analyze PDF structure: {type(e).__name__}")
+        return "[No text could be extracted from PDF - unable to determine if image-based]", "error"
 
 def extract_file_info(filename):
     """Extract product and variant info from filename"""
