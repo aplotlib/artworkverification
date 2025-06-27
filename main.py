@@ -245,10 +245,14 @@ def extract_text_from_pdf(file_bytes):
                 page_text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', page_text)
                 text += page_text + "\n"
         
+        # If no text was extracted, return a message
+        if not text.strip():
+            return "[No text could be extracted from PDF - file may be scanned or image-based]"
+            
         return text.strip()
     except Exception as e:
         logger.error(f"PDF extraction error: {e}")
-        return ""
+        return f"[Error extracting PDF: {str(e)}]"
 
 def extract_file_info(filename):
     """Extract product and variant info from filename"""
@@ -332,7 +336,17 @@ Analyze the file and provide your assessment."""
 
 def parse_ai_response(response_text, provider):
     """Parse AI response with multiple fallback methods"""
-    logger.info(f"Parsing {provider} response: {response_text[:200]}...")
+    logger.info(f"Parsing {provider} response length: {len(response_text)}")
+    
+    # Initialize default structure
+    parsed = {
+        'overall_assessment': 'UNKNOWN',
+        'checklist_validation': {},
+        'critical_issues': [],
+        'warnings': [],
+        'spelling_errors': [],
+        'consistency_issues': []
+    }
     
     # Method 1: Try direct JSON parsing
     try:
@@ -340,22 +354,40 @@ def parse_ai_response(response_text, provider):
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             json_text = json_match.group(0)
+            # Clean up common JSON issues
+            json_text = json_text.replace('\n', ' ').replace('\r', ' ')
             result = json.loads(json_text)
             
-            # Normalize keys to lowercase
-            normalized = {}
-            for key, value in result.items():
-                normalized[key.lower().replace('_', '')] = value
+            # Handle different key formats (lowercase, uppercase, with/without underscores)
+            for key in ['overall_assessment', 'overallAssessment', 'OVERALL_ASSESSMENT', 'overall']:
+                if key in result:
+                    parsed['overall_assessment'] = str(result[key]).upper().replace(' ', '_')
+                    break
             
-            # Map to expected structure
-            parsed = {
-                'overall_assessment': normalized.get('overallassessment', normalized.get('overall', 'UNKNOWN')),
-                'checklist_validation': normalized.get('checklistvalidation', {}),
-                'critical_issues': normalized.get('criticalissues', []),
-                'warnings': normalized.get('warnings', []),
-                'spelling_errors': normalized.get('spellingerrors', []),
-                'consistency_issues': normalized.get('consistencyissues', [])
-            }
+            for key in ['checklist_validation', 'checklistValidation', 'CHECKLIST_VALIDATION', 'checklist']:
+                if key in result:
+                    parsed['checklist_validation'] = result[key]
+                    break
+            
+            for key in ['critical_issues', 'criticalIssues', 'CRITICAL_ISSUES', 'critical']:
+                if key in result:
+                    parsed['critical_issues'] = result[key] if isinstance(result[key], list) else [result[key]]
+                    break
+            
+            for key in ['warnings', 'WARNINGS', 'warning']:
+                if key in result:
+                    parsed['warnings'] = result[key] if isinstance(result[key], list) else [result[key]]
+                    break
+            
+            for key in ['spelling_errors', 'spellingErrors', 'SPELLING_ERRORS', 'spelling']:
+                if key in result:
+                    parsed['spelling_errors'] = result[key] if isinstance(result[key], list) else [result[key]]
+                    break
+            
+            for key in ['consistency_issues', 'consistencyIssues', 'CONSISTENCY_ISSUES', 'consistency']:
+                if key in result:
+                    parsed['consistency_issues'] = result[key] if isinstance(result[key], list) else [result[key]]
+                    break
             
             logger.info(f"Successfully parsed JSON from {provider}")
             return parsed
@@ -364,53 +396,78 @@ def parse_ai_response(response_text, provider):
     
     # Method 2: Extract key information using patterns
     try:
-        parsed = {
-            'overall_assessment': 'UNKNOWN',
-            'checklist_validation': {},
-            'critical_issues': [],
-            'warnings': [],
-            'spelling_errors': [],
-            'consistency_issues': []
-        }
-        
         # Extract overall assessment
-        assessment_match = re.search(r'(APPROVED|NEEDS[_ ]REVISION|REVIEW[_ ]REQUIRED)', response_text, re.IGNORECASE)
-        if assessment_match:
-            parsed['overall_assessment'] = assessment_match.group(1).upper().replace(' ', '_')
+        assessment_patterns = [
+            r'overall[_\s]assessment["\s:]+([A-Z_\s]+)',
+            r'"overall_assessment"\s*:\s*"([^"]+)"',
+            r'Assessment:\s*([A-Z_\s]+)',
+            r'(APPROVED|NEEDS[_\s]REVISION|REVIEW[_\s]REQUIRED)'
+        ]
+        
+        for pattern in assessment_patterns:
+            match = re.search(pattern, response_text, re.IGNORECASE)
+            if match:
+                assessment = match.group(1).strip().upper().replace(' ', '_')
+                if assessment in ['APPROVED', 'NEEDS_REVISION', 'REVIEW_REQUIRED']:
+                    parsed['overall_assessment'] = assessment
+                    break
         
         # Extract critical issues
-        critical_match = re.search(r'critical.*?:(.*?)(?:warnings|spelling|$)', response_text, re.IGNORECASE | re.DOTALL)
-        if critical_match:
-            issues = re.findall(r'[-•]\s*(.+)', critical_match.group(1))
-            parsed['critical_issues'] = [issue.strip() for issue in issues]
+        critical_section = re.search(r'critical[_\s]issues["\s:]+\[(.*?)\]', response_text, re.IGNORECASE | re.DOTALL)
+        if critical_section:
+            issues_text = critical_section.group(1)
+            issues = re.findall(r'"([^"]+)"', issues_text)
+            parsed['critical_issues'] = issues
+        else:
+            # Try line-based extraction
+            critical_match = re.search(r'critical.*?:(.*?)(?:warnings|spelling|\Z)', response_text, re.IGNORECASE | re.DOTALL)
+            if critical_match:
+                issues = re.findall(r'[-•]\s*(.+)', critical_match.group(1))
+                parsed['critical_issues'] = [issue.strip() for issue in issues]
         
         # Extract warnings
-        warning_match = re.search(r'warnings.*?:(.*?)(?:spelling|consistency|$)', response_text, re.IGNORECASE | re.DOTALL)
-        if warning_match:
-            warnings = re.findall(r'[-•]\s*(.+)', warning_match.group(1))
-            parsed['warnings'] = [warning.strip() for warning in warnings]
+        warning_section = re.search(r'warnings["\s:]+\[(.*?)\]', response_text, re.IGNORECASE | re.DOTALL)
+        if warning_section:
+            warnings_text = warning_section.group(1)
+            warnings = re.findall(r'"([^"]+)"', warnings_text)
+            parsed['warnings'] = warnings
         
-        # Extract checklist items (✅ PASS, ❌ FAIL, ⚠️ UNSURE)
-        checklist_items = re.findall(r'([✅❌⚠️])\s*(.+?):\s*(.+)', response_text)
-        for status_emoji, item, explanation in checklist_items:
-            status = 'PASS' if '✅' in status_emoji else 'FAIL' if '❌' in status_emoji else 'UNSURE'
-            parsed['checklist_validation'][item.strip()] = {
-                'status': status,
-                'explanation': explanation.strip()
-            }
+        # Extract checklist items
+        checklist_patterns = [
+            r'([✅❌⚠️])\s*([^:]+):\s*([^\n]+)',
+            r'"([^"]+)":\s*\{\s*"status":\s*"(PASS|FAIL|UNSURE)"[^}]*"explanation":\s*"([^"]+)"',
+            r'(PASS|FAIL|UNSURE):\s*([^:]+):\s*([^\n]+)'
+        ]
         
-        logger.info(f"Extracted partial data from {provider} using patterns")
+        for pattern in checklist_patterns:
+            matches = re.findall(pattern, response_text)
+            if matches:
+                for match in matches:
+                    if len(match) == 3:
+                        if match[0] in ['✅', '❌', '⚠️']:
+                            status = 'PASS' if '✅' in match[0] else 'FAIL' if '❌' in match[0] else 'UNSURE'
+                            item = match[1].strip()
+                            explanation = match[2].strip()
+                        else:
+                            item = match[1].strip() if match[0] in ['PASS', 'FAIL', 'UNSURE'] else match[0].strip()
+                            status = match[0] if match[0] in ['PASS', 'FAIL', 'UNSURE'] else match[1]
+                            explanation = match[2].strip()
+                        
+                        parsed['checklist_validation'][item] = {
+                            'status': status,
+                            'explanation': explanation
+                        }
+        
+        logger.info(f"Extracted data from {provider} using patterns")
         return parsed
         
     except Exception as e:
         logger.error(f"Pattern extraction failed for {provider}: {e}")
     
-    # Method 3: Return minimal structure
-    return {
-        'overall_assessment': 'ERROR',
-        'error': f"Failed to parse {provider} response",
-        'raw_response': response_text[:500]
-    }
+    # Method 3: Return with error info
+    parsed['error'] = f"Failed to parse {provider} response completely"
+    parsed['raw_response'] = response_text[:1000]
+    return parsed
 
 def call_claude(prompt, api_key):
     """Call Claude API with better error handling"""
@@ -466,7 +523,7 @@ def call_openai(prompt, api_key):
         logger.error(f"OpenAI API error: {e}")
         return {"error": str(e), "overall_assessment": "ERROR"}
 
-def display_ai_results(results, provider):
+def display_ai_results(results, provider, file_key=""):
     """Display AI validation results with better error handling"""
     
     # Check for errors first
@@ -489,8 +546,9 @@ def display_ai_results(results, provider):
     
     st.markdown(f'<div class="validation-result {assessment_color}"><strong>Overall Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
     
-    # Debug info in development
-    if st.checkbox(f"Show {provider} debug info", key=f"debug_{provider}"):
+    # Debug info in development - include file_key to make unique
+    debug_key = f"debug_{provider}_{file_key}".replace(" ", "_").replace(".", "_")
+    if st.checkbox(f"Show {provider} debug info", key=debug_key):
         st.markdown(f'<div class="debug-box">{json.dumps(results, indent=2)}</div>', unsafe_allow_html=True)
     
     # Checklist validation
@@ -500,15 +558,25 @@ def display_ai_results(results, provider):
         for item, details in checklist.items():
             if isinstance(details, dict):
                 status = details.get('status', 'UNKNOWN')
-                explanation = details.get('explanation', '')
+                explanation = details.get('explanation', 'No explanation provided')
             else:
+                # Handle string or other non-dict values
                 status = 'UNKNOWN'
-                explanation = str(details)
+                explanation = str(details) if details else 'No details available'
             
-            status_symbol = {'PASS': '✅', 'FAIL': '❌', 'UNSURE': '⚠️'}.get(status, '❓')
-            status_class = {'PASS': 'checklist-pass', 'FAIL': 'checklist-fail', 'UNSURE': 'checklist-warning'}.get(status, 'checklist-warning')
+            # Map status to symbol and class
+            status_symbol = {'PASS': '✅', 'FAIL': '❌', 'UNSURE': '⚠️', 'UNKNOWN': '❓'}.get(status, '❓')
+            status_class = {
+                'PASS': 'checklist-pass', 
+                'FAIL': 'checklist-fail', 
+                'UNSURE': 'checklist-warning',
+                'UNKNOWN': 'checklist-warning'
+            }.get(status, 'checklist-warning')
             
-            st.markdown(f'<div class="checklist-item {status_class}">{status_symbol} {item}: {explanation}</div>', unsafe_allow_html=True)
+            # Clean up item name (remove extra quotes or formatting)
+            item_clean = str(item).strip('"\'')
+            
+            st.markdown(f'<div class="checklist-item {status_class}">{status_symbol} {item_clean}: {explanation}</div>', unsafe_allow_html=True)
     else:
         st.info("No checklist validation data available")
     
@@ -712,6 +780,12 @@ def main():
                 else:
                     text = file.read().decode('utf-8', errors='ignore')
                 
+                # Check if text extraction was successful
+                if not text or len(text) < 10:
+                    st.warning(f"⚠️ Limited text extracted from {file.name}. Results may be incomplete.")
+                elif "[Error extracting PDF" in text or "[No text could be extracted" in text:
+                    st.error(f"❌ Could not extract text from {file.name}. File may be image-based or corrupted.")
+                
                 # Get file info
                 file_info = extract_file_info(file.name)
                 
@@ -734,13 +808,13 @@ def main():
                     'text_preview': text[:500] + '...' if len(text) > 500 else text
                 }
                 
-                if 'claude' in providers:
+                if 'claude' in providers and 'claude' in api_keys:
                     with st.spinner(f"🤖 Claude reviewing {file.name}..."):
                         claude_result = call_claude(prompt, api_keys['claude'])
                         file_results['claude'] = claude_result
                         time.sleep(0.5)  # Rate limiting
                 
-                if 'openai' in providers:
+                if 'openai' in providers and 'openai' in api_keys:
                     with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
                         openai_result = call_openai(prompt, api_keys['openai'])
                         file_results['openai'] = openai_result
@@ -749,9 +823,16 @@ def main():
                 results[file.name] = file_results
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            status_text.text("✅ AI validation complete!")
+            progress_bar.empty()  # Clean up progress bar
+            status_text.empty()   # Clean up status text
+            st.success("✅ AI validation complete!")
             st.session_state.validation_results = results
             st.balloons()
+    
+    elif uploaded_files and not providers:
+        st.warning("⚠️ Please select at least one AI provider to validate files.")
+    elif not uploaded_files and providers:
+        st.info("📤 Upload files above to start AI validation.")
     
     # Display results
     if st.session_state.validation_results:
@@ -773,20 +854,20 @@ def main():
                     
                     with col1:
                         st.markdown("#### 🤖 Claude Results")
-                        display_ai_results(file_results['claude'], 'Claude')
+                        display_ai_results(file_results['claude'], 'Claude', filename)
                     
                     with col2:
                         st.markdown("#### 🤖 OpenAI Results")
-                        display_ai_results(file_results['openai'], 'OpenAI')
+                        display_ai_results(file_results['openai'], 'OpenAI', filename)
                 else:
                     # Single provider
                     if 'claude' in file_results:
                         st.markdown("#### 🤖 Claude Validation")
-                        display_ai_results(file_results['claude'], 'Claude')
+                        display_ai_results(file_results['claude'], 'Claude', filename)
                     
                     if 'openai' in file_results:
                         st.markdown("#### 🤖 OpenAI Validation")
-                        display_ai_results(file_results['openai'], 'OpenAI')
+                        display_ai_results(file_results['openai'], 'OpenAI', filename)
         
         # Export results
         st.markdown("### 💾 Export Results")
@@ -807,6 +888,43 @@ def main():
                 file_name=f"ai_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 mime="application/json"
             )
+        
+        with col2:
+            # Summary export
+            summary = generate_summary_report(st.session_state.validation_results)
+            
+            st.download_button(
+                label="📥 Download Summary Report",
+                data=summary,
+                file_name=f"validation_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain"
+            )
+
+    else:
+        # Instructions
+        st.info("""
+        ### 🚀 How to Use AI Validation
+        
+        1. **Select AI Provider(s)**: Choose Claude, OpenAI, or both for comparison
+        2. **Upload Files**: Add your packaging PDFs and text files
+        3. **Review Results**: AI will check against the full validation checklist
+        4. **Export Reports**: Download detailed validation results
+        
+        **What AI Checks:**
+        - ✅ Complete checklist validation
+        - ✅ Spelling and grammar
+        - ✅ Origin marking (Made in China)
+        - ✅ Color consistency
+        - ✅ SKU format validation
+        - ✅ Brand presence
+        - ✅ Overall quality assessment
+        
+        **Benefits of AI Review:**
+        - 🎯 More thorough than pattern matching
+        - 🔍 Catches subtle issues
+        - 💡 Provides specific recommendations
+        - ⚡ Fast and consistent
+        """)
 
 if __name__ == "__main__":
     main()
