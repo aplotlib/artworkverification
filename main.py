@@ -1,6 +1,6 @@
 """
-packaging_validator.py - Simple tool for graphic designers to validate packaging and labels
-Ensures consistency across product variants and catches common errors
+packaging_validator_ai.py - AI-powered packaging and label validator
+Uses Claude and/or OpenAI to intelligently review packaging files
 """
 
 import streamlit as st
@@ -10,13 +10,11 @@ from datetime import datetime
 import logging
 import os
 from typing import Dict, List, Any, Optional, Tuple
-import base64
-from PIL import Image
-import io
-import fitz  # PyMuPDF for PDF handling
-import pytesseract
-from concurrent.futures import ThreadPoolExecutor
 import json
+import PyPDF2
+from collections import defaultdict
+import time
+import base64
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,13 +22,12 @@ logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
-    page_title="Packaging & Label Validator",
-    page_icon="📦",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="AI Packaging Validator",
+    page_icon="🤖",
+    layout="wide"
 )
 
-# Try to import AI modules
+# Try to import AI libraries
 try:
     import openai
     OPENAI_AVAILABLE = True
@@ -45,135 +42,196 @@ except ImportError:
     CLAUDE_AVAILABLE = False
     logger.warning("Anthropic not available")
 
-# Common packaging errors to check
-COMMON_ERRORS = {
-    'origin': {
-        'correct': ['made in china', '中国制造'],
-        'incorrect': ['made in taiwan', 'made in vietnam', 'made in usa']
-    },
-    'required_text': [
-        'vive', 'vive health', 'www.vivehealth.com'
+# Validation checklist from the document
+VALIDATION_CHECKLIST = {
+    "Packaging Artwork": [
+        "Product name is consistent across all artwork",
+        "No misspelled words in content",
+        "Origin is 'Made in China' by default",
+        "Color identifier and size match SKU suffix (e.g., Beige-Small = SUP1030BGES)",
+        "UDI Giftbox/UPC barcode is present and matches UPC serial",
+        "Color code information is present"
     ],
-    'barcode_patterns': [
-        r'\d{12,13}',  # UPC/EAN
-        r'[A-Z]{3}\d{4}[A-Z0-9\-]*'  # SKU pattern
+    "Manual Artwork": [
+        "Product name is consistent across artwork",
+        "No misspelled words in content"
+    ],
+    "Washtag/Logo tag": [
+        "Logo is present",
+        "Washtag has care icons"
+    ],
+    "Made in China sticker": [
+        "All products have Made in China sticker (unless rating label or washtag present)"
+    ],
+    "Shipping Mark": [
+        "Format is SKU - QTY",
+        "QR Code matches the SKU - QTY information"
+    ],
+    "Product QR Code": [
+        "QR Code matches the SKU - QTY info"
+    ],
+    "Thank You Card": [
+        "Thank you card needed for all Vive brand products"
     ]
 }
 
-# Checklist items from the document
-CHECKLIST_ITEMS = {
-    'packaging': [
-        'Product name consistency',
-        'No spelling errors',
-        'Made in China origin',
-        'Color matches SKU suffix',
-        'UDI/UPC barcode present',
-        'Color code information'
+# Common issues to check
+COMMON_ISSUES = {
+    "origin_errors": [
+        "Made in Taiwan",
+        "Made in Vietnam", 
+        "Product of Taiwan"
     ],
-    'manual': [
-        'Product name consistency',
-        'No spelling errors'
+    "required_elements": [
+        "Vive",
+        "Vive Health",
+        "vivehealth.com"
     ],
-    'tags': [
-        'Logo present',
-        'Care icons on washtag',
-        'Color matches product'
-    ],
-    'shipping': [
-        'SKU - QTY format',
-        'QR code present',
-        'QR matches SKU'
+    "spelling_errors": [
+        ("recieve", "receive"),
+        ("occured", "occurred"),
+        ("seperate", "separate"),
+        ("definately", "definitely"),
+        ("managment", "management"),
+        ("accomodate", "accommodate"),
+        ("occassion", "occasion"),
+        ("neccessary", "necessary")
     ]
 }
 
 def inject_css():
-    """Inject custom CSS for better UI"""
+    """Inject CSS styling"""
     st.markdown("""
     <style>
-        /* Color scheme */
-        :root {
-            --success: #00C853;
-            --error: #FF5252;
-            --warning: #FFC107;
-            --info: #2196F3;
-            --primary: #1976D2;
-        }
-        
-        /* Header styling */
         .main-header {
-            background: linear-gradient(135deg, #1976D2 0%, #00ACC1 100%);
-            padding: 2rem;
-            border-radius: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 2.5rem;
+            border-radius: 12px;
             color: white;
             text-align: center;
             margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         
-        /* Result boxes */
-        .success-box {
-            background: #E8F5E9;
-            border-left: 4px solid var(--success);
+        .ai-option {
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
             padding: 1rem;
-            border-radius: 4px;
             margin: 0.5rem 0;
+            transition: all 0.3s;
         }
         
-        .error-box {
-            background: #FFEBEE;
-            border-left: 4px solid var(--error);
-            padding: 1rem;
-            border-radius: 4px;
-            margin: 0.5rem 0;
+        .ai-option:hover {
+            border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(102,126,234,0.1);
         }
         
-        .warning-box {
-            background: #FFF8E1;
-            border-left: 4px solid var(--warning);
-            padding: 1rem;
-            border-radius: 4px;
-            margin: 0.5rem 0;
+        .ai-option.selected {
+            border-color: #667eea;
+            background: #f3f4ff;
         }
         
-        /* File comparison */
-        .comparison-grid {
+        .validation-result {
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            border-left: 4px solid;
+        }
+        
+        .error { 
+            background: #fee; 
+            border-color: #f44336;
+            color: #c62828;
+        }
+        
+        .warning { 
+            background: #fff3cd; 
+            border-color: #ffc107;
+            color: #856404;
+        }
+        
+        .success { 
+            background: #d4edda; 
+            border-color: #28a745;
+            color: #155724;
+        }
+        
+        .info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+            color: #0c5460;
+        }
+        
+        .ai-comparison {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 1rem;
             margin: 1rem 0;
         }
         
-        .file-box {
-            border: 2px solid #E0E0E0;
+        .ai-result-box {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
             border-radius: 8px;
             padding: 1rem;
-            background: #FAFAFA;
         }
         
-        .file-box.error {
-            border-color: var(--error);
-            background: #FFEBEE;
+        .ai-result-box h4 {
+            margin: 0 0 1rem 0;
+            color: #495057;
         }
         
-        .file-box.success {
-            border-color: var(--success);
-            background: #E8F5E9;
-        }
-        
-        /* Checklist styling */
         .checklist-item {
             padding: 0.5rem;
             margin: 0.25rem 0;
             border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         
         .checklist-pass {
-            background: #E8F5E9;
-            color: #2E7D32;
+            background: #d4edda;
+            color: #155724;
         }
         
         .checklist-fail {
-            background: #FFEBEE;
-            color: #C62828;
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .checklist-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .cost-indicator {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 6px;
+            padding: 0.75rem;
+            margin: 0.5rem 0;
+            font-size: 0.9rem;
+        }
+        
+        .provider-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-right: 0.5rem;
+        }
+        
+        .claude-badge {
+            background: #f3e5ff;
+            color: #6b46c1;
+        }
+        
+        .openai-badge {
+            background: #e5f6ff;
+            color: #0066cc;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -182,357 +240,316 @@ def get_api_keys():
     """Get API keys from secrets or environment"""
     keys = {}
     
-    # Try Streamlit secrets first
     try:
         if hasattr(st, 'secrets'):
-            if 'OPENAI_API_KEY' in st.secrets:
-                keys['openai'] = st.secrets['OPENAI_API_KEY']
-            elif 'openai_api_key' in st.secrets:
-                keys['openai'] = st.secrets['openai_api_key']
-                
-            if 'ANTHROPIC_API_KEY' in st.secrets:
-                keys['claude'] = st.secrets['ANTHROPIC_API_KEY']
-            elif 'claude_api_key' in st.secrets:
-                keys['claude'] = st.secrets['claude_api_key']
+            # Check for various key names
+            for key_name in ['OPENAI_API_KEY', 'openai_api_key', 'openai']:
+                if key_name in st.secrets:
+                    keys['openai'] = st.secrets[key_name]
+                    break
+            
+            for key_name in ['ANTHROPIC_API_KEY', 'anthropic_api_key', 'claude_api_key']:
+                if key_name in st.secrets:
+                    keys['claude'] = st.secrets[key_name]
+                    break
     except:
         pass
     
-    # Try environment variables
+    # Fallback to environment
     if 'openai' not in keys:
         keys['openai'] = os.getenv('OPENAI_API_KEY')
     if 'claude' not in keys:
         keys['claude'] = os.getenv('ANTHROPIC_API_KEY')
     
-    return keys
+    return {k: v for k, v in keys.items() if v}
 
 def extract_text_from_pdf(file_bytes):
-    """Extract text from PDF using PyMuPDF"""
+    """Extract text from PDF"""
     try:
-        pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+        pdf_reader = PyPDF2.PdfReader(file_bytes)
         text = ""
-        for page_num in range(pdf_document.page_count):
-            page = pdf_document[page_num]
-            text += page.get_text()
-        pdf_document.close()
-        return text
+        
+        for page_num in range(len(pdf_reader.pages)):
+            page = pdf_reader.pages[page_num]
+            page_text = page.extract_text()
+            
+            if page_text:
+                # Clean up text
+                page_text = re.sub(r'\s+', ' ', page_text)
+                page_text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', page_text)
+                text += page_text + "\n"
+        
+        return text.strip()
     except Exception as e:
-        logger.error(f"PDF text extraction error: {e}")
+        logger.error(f"PDF extraction error: {e}")
         return ""
 
-def extract_text_from_image(image_bytes):
-    """Extract text from image using OCR"""
-    try:
-        image = Image.open(io.BytesIO(image_bytes))
-        text = pytesseract.image_to_string(image)
-        return text
-    except Exception as e:
-        logger.error(f"OCR error: {e}")
-        return ""
-
-def extract_colors_from_text(text):
-    """Extract color mentions from text"""
-    common_colors = [
-        'black', 'white', 'red', 'blue', 'green', 'yellow', 'purple', 
-        'pink', 'orange', 'grey', 'gray', 'brown', 'beige', 'floral'
-    ]
-    
-    found_colors = []
-    text_lower = text.lower()
-    
-    for color in common_colors:
-        if color in text_lower:
-            found_colors.append(color)
-    
-    return found_colors
-
-def extract_sku_from_text(text):
-    """Extract SKU patterns from text"""
-    sku_patterns = [
-        r'\b([A-Z]{3}\d{4}[A-Z0-9\-]*)\b',
-        r'\bSKU[:\s]+([A-Z0-9\-]+)\b',
-        r'\bItem[:\s#]+([A-Z0-9\-]+)\b'
-    ]
-    
-    skus = []
-    for pattern in sku_patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        skus.extend(matches)
-    
-    return list(set(skus))
-
-def check_origin_consistency(texts):
-    """Check if origin marking is consistent and correct"""
-    issues = []
-    origins_found = []
-    
-    for idx, text in enumerate(texts):
-        text_lower = text.lower()
-        
-        # Check for correct origin
-        has_correct = any(origin in text_lower for origin in COMMON_ERRORS['origin']['correct'])
-        has_incorrect = False
-        incorrect_found = []
-        
-        for incorrect in COMMON_ERRORS['origin']['incorrect']:
-            if incorrect in text_lower:
-                has_incorrect = True
-                incorrect_found.append(incorrect)
-        
-        if has_incorrect:
-            issues.append(f"File {idx+1}: Found incorrect origin marking: {', '.join(incorrect_found)}")
-        elif not has_correct and 'made in' in text_lower:
-            issues.append(f"File {idx+1}: Origin marking found but not 'Made in China'")
-        
-        # Extract what origin was found
-        origin_match = re.search(r'made in (\w+)', text_lower)
-        if origin_match:
-            origins_found.append(origin_match.group(1))
-    
-    # Check consistency
-    if len(set(origins_found)) > 1:
-        issues.append(f"Inconsistent origin markings found: {', '.join(set(origins_found))}")
-    
-    return issues
-
-def check_color_consistency(file_data):
-    """Check if colors are consistent across files"""
-    issues = []
-    colors_by_file = {}
-    
-    for filename, text in file_data.items():
-        colors = extract_colors_from_text(text)
-        if colors:
-            colors_by_file[filename] = colors
-    
-    # Check if same product has different colors mentioned
-    # Group files by product (remove color identifiers from filename)
-    product_groups = {}
-    for filename, colors in colors_by_file.items():
-        # Remove common color words from filename to get base product
-        base_name = filename.lower()
-        for color in ['black', 'purple', 'floral', 'white', 'red', 'blue']:
-            base_name = base_name.replace(color, '')
-        
-        if base_name not in product_groups:
-            product_groups[base_name] = []
-        product_groups[base_name].append((filename, colors))
-    
-    # Check consistency within product groups
-    for product, file_colors in product_groups.items():
-        if len(file_colors) > 1:
-            # Each variant should have its own consistent color
-            for filename, colors in file_colors:
-                expected_color = None
-                # Extract expected color from filename
-                filename_lower = filename.lower()
-                for color in ['black', 'purple', 'white', 'blue', 'red']:
-                    if color in filename_lower:
-                        expected_color = color
-                        break
-                
-                if expected_color and expected_color not in colors:
-                    issues.append(f"{filename}: Expected '{expected_color}' but not found in content")
-    
-    return issues
-
-def check_sku_format(text):
-    """Check if SKU follows correct format"""
-    skus = extract_sku_from_text(text)
-    issues = []
-    
-    for sku in skus:
-        # Check basic format (3 letters + 4 numbers + optional suffix)
-        if not re.match(r'^[A-Z]{3}\d{4}', sku):
-            issues.append(f"SKU '{sku}' doesn't follow standard format (XXX####)")
-        
-        # Check color suffix if present
-        if len(sku) > 7:
-            suffix = sku[7:]
-            # Common color codes
-            valid_suffixes = ['BLK', 'WHT', 'BLU', 'RED', 'PUR', 'GRY', 'BEI', 'S', 'M', 'L', 'XL']
-            if not any(suffix.endswith(vs) for vs in valid_suffixes):
-                issues.append(f"SKU '{sku}' has non-standard suffix '{suffix}'")
-    
-    return issues
-
-def validate_files(uploaded_files):
-    """Main validation function"""
-    results = {
-        'errors': [],
-        'warnings': [],
-        'success': [],
-        'file_data': {}
+def extract_file_info(filename):
+    """Extract product and variant info from filename"""
+    info = {
+        'product': '',
+        'variant': '',
+        'color': '',
+        'type': ''
     }
     
-    # Extract text from all files
-    file_texts = {}
+    name_lower = filename.lower()
+    name_parts = name_lower.replace('_', ' ').replace('-', ' ').split()
     
-    for file in uploaded_files:
+    # Identify file type
+    file_types = ['packaging', 'label', 'tag', 'manual', 'quickstart', 'shipping', 'washtag', 'giftbox']
+    for ft in file_types:
+        if ft in name_lower:
+            info['type'] = ft
+            break
+    
+    # Extract color
+    colors = ['black', 'white', 'blue', 'red', 'purple', 'grey', 'gray', 'beige', 'floral']
+    for color in colors:
+        if color in name_lower:
+            info['color'] = color
+            break
+    
+    # Extract product
+    product_parts = []
+    skip_words = colors + file_types + ['pdf', 'png', 'jpg', 'jpeg', 'advanced']
+    for part in name_parts:
+        if part not in skip_words and len(part) > 2:
+            product_parts.append(part)
+    
+    info['product'] = ' '.join(product_parts[:3])
+    
+    return info
+
+def create_ai_prompt(text, filename, file_info, checklist_items):
+    """Create comprehensive prompt for AI validation"""
+    prompt = f"""You are a quality control expert reviewing packaging and label files for Vive Health medical devices.
+
+FILE INFORMATION:
+- Filename: {filename}
+- Product: {file_info['product']}
+- Type: {file_info['type']}
+- Color variant: {file_info['color']}
+
+EXTRACTED TEXT:
+{text[:3000]}...
+
+VALIDATION CHECKLIST:
+{json.dumps(checklist_items, indent=2)}
+
+CRITICAL REQUIREMENTS:
+1. Origin MUST be "Made in China" (not Taiwan, Vietnam, etc.)
+2. Vive Health branding must be present
+3. Color in content must match filename color variant
+4. SKU format should be XXX####-COLOR (e.g., SUP1030BGES for Beige-Small)
+5. No spelling errors
+6. Product name consistency
+
+Please analyze this file and provide:
+
+1. CHECKLIST VALIDATION: For each checklist item, indicate:
+   - ✅ PASS: Item clearly meets requirement
+   - ❌ FAIL: Item fails requirement
+   - ⚠️ UNSURE: Cannot determine from text
+   - Explanation for each item
+
+2. CRITICAL ISSUES: List any critical errors that must be fixed
+
+3. WARNINGS: List any potential issues that should be reviewed
+
+4. SPELLING CHECK: List any spelling errors found
+
+5. CONSISTENCY CHECK: Note any inconsistencies (color, product name, etc.)
+
+6. OVERALL ASSESSMENT: 
+   - APPROVED: Ready for production
+   - NEEDS REVISION: Has issues that must be fixed
+   - REVIEW REQUIRED: Has warnings that need human review
+
+Format your response as structured JSON."""
+
+    return prompt
+
+def call_claude(prompt, api_key):
+    """Call Claude API"""
+    if not CLAUDE_AVAILABLE or not api_key:
+        return None
+    
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        
+        response = client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=1500,
+            temperature=0.1,
+            system="You are a quality control expert. Respond only with valid JSON.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        # Extract JSON from response
+        response_text = response.content[0].text
+        
+        # Try to parse JSON
         try:
-            if file.type == 'application/pdf':
-                text = extract_text_from_pdf(file.read())
-            elif file.type.startswith('image/'):
-                text = extract_text_from_image(file.read())
+            # Find JSON in response (in case there's extra text)
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                json_text = response_text[json_start:json_end]
+                return json.loads(json_text)
             else:
-                text = file.read().decode('utf-8')
+                return {"error": "No JSON found in response", "raw_response": response_text}
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON response", "raw_response": response_text}
             
-            file_texts[file.name] = text
-            results['file_data'][file.name] = {
-                'text': text[:500] + '...' if len(text) > 500 else text,
-                'type': file.type,
-                'size': file.size
-            }
-        except Exception as e:
-            results['errors'].append(f"Error reading {file.name}: {str(e)}")
-    
-    # Run validation checks
-    if len(file_texts) > 0:
-        # Check origin consistency
-        origin_issues = check_origin_consistency(list(file_texts.values()))
-        results['errors'].extend(origin_issues)
-        
-        # Check color consistency
-        color_issues = check_color_consistency(file_texts)
-        results['warnings'].extend(color_issues)
-        
-        # Check each file individually
-        for filename, text in file_texts.items():
-            # Check SKU format
-            sku_issues = check_sku_format(text)
-            if sku_issues:
-                results['warnings'].extend([f"{filename}: {issue}" for issue in sku_issues])
-            
-            # Check for required text
-            text_lower = text.lower()
-            for required in COMMON_ERRORS['required_text']:
-                if required not in text_lower:
-                    results['warnings'].append(f"{filename}: Missing required text '{required}'")
-            
-            # Check for spelling (basic check)
-            common_misspellings = {
-                'recieve': 'receive',
-                'occured': 'occurred',
-                'seperate': 'separate',
-                'definately': 'definitely',
-                'managment': 'management'
-            }
-            
-            for wrong, correct in common_misspellings.items():
-                if wrong in text_lower:
-                    results['errors'].append(f"{filename}: Spelling error - '{wrong}' should be '{correct}'")
-    
-    # Add success messages
-    if not results['errors']:
-        results['success'].append("✅ No critical errors found!")
-    if not results['warnings']:
-        results['success'].append("✅ No warnings found!")
-    
-    return results
+    except Exception as e:
+        logger.error(f"Claude API error: {e}")
+        return {"error": str(e)}
 
-def display_validation_results(results):
-    """Display validation results in a user-friendly way"""
-    # Summary section
-    st.markdown("### 📊 Validation Summary")
+def call_openai(prompt, api_key):
+    """Call OpenAI API"""
+    if not OPENAI_AVAILABLE or not api_key:
+        return None
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        error_count = len(results['errors'])
-        if error_count == 0:
-            st.success(f"✅ **{error_count} Errors**")
-        else:
-            st.error(f"❌ **{error_count} Errors**")
-    
-    with col2:
-        warning_count = len(results['warnings'])
-        if warning_count == 0:
-            st.success(f"✅ **{warning_count} Warnings**")
-        else:
-            st.warning(f"⚠️ **{warning_count} Warnings**")
-    
-    with col3:
-        files_count = len(results['file_data'])
-        st.info(f"📁 **{files_count} Files Checked**")
-    
-    # Detailed results
-    if results['errors']:
-        st.markdown("### ❌ Errors (Must Fix)")
-        for error in results['errors']:
-            st.markdown(f"""
-            <div class="error-box">
-                {error}
-            </div>
-            """, unsafe_allow_html=True)
-    
-    if results['warnings']:
-        st.markdown("### ⚠️ Warnings (Please Review)")
-        for warning in results['warnings']:
-            st.markdown(f"""
-            <div class="warning-box">
-                {warning}
-            </div>
-            """, unsafe_allow_html=True)
-    
-    if results['success']:
-        st.markdown("### ✅ Passed Checks")
-        for success in results['success']:
-            st.markdown(f"""
-            <div class="success-box">
-                {success}
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # File details
-    with st.expander("📄 File Details", expanded=False):
-        for filename, data in results['file_data'].items():
-            st.markdown(f"**{filename}**")
-            st.text(f"Type: {data['type']}")
-            st.text(f"Size: {data['size']:,} bytes")
-            st.text_area("Content Preview", data['text'], height=100, key=filename)
-            st.markdown("---")
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a quality control expert. Respond only with valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=1500,
+            response_format={"type": "json_object"}
+        )
+        
+        response_text = response.choices[0].message.content
+        
+        try:
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON response", "raw_response": response_text}
+            
+    except Exception as e:
+        logger.error(f"OpenAI API error: {e}")
+        return {"error": str(e)}
 
-def display_checklist_guide():
-    """Display the checklist as a guide"""
-    st.markdown("### 📋 Packaging Checklist Guide")
+def display_ai_results(results, provider):
+    """Display AI validation results"""
+    if "error" in results:
+        st.error(f"**{provider} Error:** {results['error']}")
+        if "raw_response" in results:
+            with st.expander("View raw response"):
+                st.text(results['raw_response'])
+        return
     
-    for category, items in CHECKLIST_ITEMS.items():
-        st.markdown(f"**{category.title()}:**")
-        for item in items:
-            st.markdown(f"- {item}")
+    # Overall assessment
+    assessment = results.get('OVERALL_ASSESSMENT', 'UNKNOWN')
+    assessment_color = {
+        'APPROVED': 'success',
+        'NEEDS REVISION': 'error',
+        'REVIEW REQUIRED': 'warning'
+    }.get(assessment, 'info')
     
-    st.markdown("""
-    ### 🎯 Common Issues to Watch For:
-    - **Origin Mismatch**: Products marked as "Made in Taiwan" instead of "Made in China"
-    - **Color Mismatch**: Box color doesn't match label color
-    - **SKU Format**: Should follow pattern like SUP1030BGES (product-color-size)
-    - **Missing Elements**: Logo, care icons, thank you cards
-    - **Barcode Issues**: UPC/UDI must match product information
-    """)
+    st.markdown(f'<div class="validation-result {assessment_color}"><strong>Overall Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
+    
+    # Checklist validation
+    if 'CHECKLIST_VALIDATION' in results:
+        st.markdown("#### 📋 Checklist Validation")
+        for item, details in results['CHECKLIST_VALIDATION'].items():
+            if isinstance(details, dict):
+                status = details.get('status', '❓')
+                explanation = details.get('explanation', '')
+            else:
+                status = str(details)[:2] if str(details).startswith(('✅', '❌', '⚠️')) else '❓'
+                explanation = str(details)
+            
+            status_class = 'checklist-pass' if '✅' in status else 'checklist-fail' if '❌' in status else 'checklist-warning'
+            st.markdown(f'<div class="checklist-item {status_class}">{status} {item}: {explanation}</div>', unsafe_allow_html=True)
+    
+    # Critical issues
+    if 'CRITICAL_ISSUES' in results and results['CRITICAL_ISSUES']:
+        st.markdown("#### 🚨 Critical Issues")
+        for issue in results['CRITICAL_ISSUES']:
+            st.markdown(f'<div class="validation-result error">❌ {issue}</div>', unsafe_allow_html=True)
+    
+    # Warnings
+    if 'WARNINGS' in results and results['WARNINGS']:
+        st.markdown("#### ⚠️ Warnings")
+        for warning in results['WARNINGS']:
+            st.markdown(f'<div class="validation-result warning">⚠️ {warning}</div>', unsafe_allow_html=True)
+    
+    # Spelling errors
+    if 'SPELLING_CHECK' in results and results['SPELLING_CHECK']:
+        st.markdown("#### 📝 Spelling Errors")
+        for error in results['SPELLING_CHECK']:
+            if isinstance(error, dict):
+                st.markdown(f"- **{error.get('word', '')}** → {error.get('correction', '')}")
+            else:
+                st.markdown(f"- {error}")
+    
+    # Consistency check
+    if 'CONSISTENCY_CHECK' in results and results['CONSISTENCY_CHECK']:
+        st.markdown("#### 🔄 Consistency Issues")
+        for issue in results['CONSISTENCY_CHECK']:
+            st.markdown(f"- {issue}")
+
+def estimate_cost(num_files, providers):
+    """Estimate API costs"""
+    # Rough estimates per file
+    costs = {
+        'claude': 0.001,  # Claude Haiku is very cheap
+        'openai': 0.003,  # GPT-4 mini
+        'both': 0.004
+    }
+    
+    if 'both' in providers:
+        return num_files * costs['both']
+    else:
+        return num_files * sum(costs.get(p, 0) for p in providers)
 
 def main():
     inject_css()
     
+    # Initialize session state
+    if 'validation_results' not in st.session_state:
+        st.session_state.validation_results = None
+    if 'ai_providers' not in st.session_state:
+        st.session_state.ai_providers = []
+    
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>📦 Packaging & Label Validator</h1>
-        <p>Ensure accuracy across all product packaging and labels</p>
+        <h1>🤖 AI-Powered Packaging Validator</h1>
+        <p>Intelligent validation using Claude and OpenAI</p>
     </div>
     """, unsafe_allow_html=True)
     
+    # Check API availability
+    api_keys = get_api_keys()
+    
     # Sidebar
     with st.sidebar:
-        st.markdown("### 🛠️ Settings")
+        st.markdown("### 🤖 AI Providers")
         
-        # API configuration check
-        api_keys = get_api_keys()
-        api_available = any(api_keys.values())
-        
-        if api_available:
-            st.success("✅ AI APIs configured")
+        available_providers = []
+        if 'claude' in api_keys and CLAUDE_AVAILABLE:
+            available_providers.append('claude')
+            st.success("✅ Claude Available")
         else:
-            st.warning("⚠️ No AI APIs found")
-            with st.expander("API Setup"):
+            st.error("❌ Claude Not Available")
+        
+        if 'openai' in api_keys and OPENAI_AVAILABLE:
+            available_providers.append('openai')
+            st.success("✅ OpenAI Available")
+        else:
+            st.error("❌ OpenAI Not Available")
+        
+        if not available_providers:
+            st.error("No AI providers configured!")
+            with st.expander("Setup Instructions"):
                 st.markdown("""
                 Add to `.streamlit/secrets.toml`:
                 ```
@@ -543,122 +560,246 @@ def main():
         
         st.markdown("---")
         
-        # Show checklist
-        display_checklist_guide()
+        # Checklist reference
+        st.markdown("### 📋 Validation Checklist")
+        for category, items in VALIDATION_CHECKLIST.items():
+            with st.expander(category, expanded=False):
+                for item in items:
+                    st.markdown(f"• {item}")
     
     # Main content
-    st.markdown("### 📤 Upload Files to Validate")
+    st.markdown("### 🤖 Select AI Provider(s)")
     
-    # File uploader
+    col1, col2, col3 = st.columns(3)
+    
+    providers = []
+    
+    with col1:
+        if 'claude' in available_providers:
+            use_claude = st.checkbox("**Claude** (Anthropic)", value=True, help="Fast and accurate")
+            if use_claude:
+                providers.append('claude')
+            st.markdown('<span class="provider-badge claude-badge">Claude 3 Haiku</span>', unsafe_allow_html=True)
+    
+    with col2:
+        if 'openai' in available_providers:
+            use_openai = st.checkbox("**OpenAI** (GPT-4)", value=True, help="Comprehensive analysis")
+            if use_openai:
+                providers.append('openai')
+            st.markdown('<span class="provider-badge openai-badge">GPT-4 Mini</span>', unsafe_allow_html=True)
+    
+    with col3:
+        if len(available_providers) >= 2:
+            compare_both = st.checkbox("**Compare Both**", value=False, help="Get results from both AIs")
+            if compare_both:
+                providers = available_providers
+    
+    st.session_state.ai_providers = providers
+    
+    # File upload
+    st.markdown("### 📤 Upload Files for AI Review")
+    
     uploaded_files = st.file_uploader(
-        "Choose packaging and label files",
-        type=['pdf', 'png', 'jpg', 'jpeg', 'txt'],
+        "Select packaging files",
+        type=['pdf', 'txt'],
         accept_multiple_files=True,
-        help="Upload all variants of packaging, labels, and related files"
+        help="Upload all packaging, label, and manual files for AI validation"
     )
     
-    if uploaded_files:
-        # Group files by product
-        st.markdown("### 📁 Uploaded Files")
-        
-        # Display uploaded files in a grid
-        cols = st.columns(3)
-        for idx, file in enumerate(uploaded_files):
-            with cols[idx % 3]:
-                file_type_icon = "📄" if file.type == 'application/pdf' else "🖼️"
-                st.info(f"{file_type_icon} {file.name}")
+    if uploaded_files and providers:
+        # Cost estimate
+        estimated_cost = estimate_cost(len(uploaded_files), providers)
+        st.markdown(f'<div class="cost-indicator">💰 Estimated cost: ~${estimated_cost:.3f} USD</div>', unsafe_allow_html=True)
         
         # Validate button
-        if st.button("🔍 Validate Files", type="primary", use_container_width=True):
-            with st.spinner("Analyzing files..."):
-                results = validate_files(uploaded_files)
+        if st.button("🚀 Start AI Validation", type="primary", use_container_width=True):
+            results = {}
             
-            # Display results
-            display_validation_results(results)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            # Export results
-            if st.button("📥 Download Validation Report"):
-                report = {
-                    'timestamp': datetime.now().isoformat(),
-                    'files_checked': len(uploaded_files),
-                    'errors': results['errors'],
-                    'warnings': results['warnings'],
-                    'file_details': results['file_data']
+            for idx, file in enumerate(uploaded_files):
+                status_text.text(f"Processing {file.name}...")
+                
+                # Extract text
+                file.seek(0)
+                if file.type == 'application/pdf':
+                    text = extract_text_from_pdf(file)
+                else:
+                    text = file.read().decode('utf-8', errors='ignore')
+                
+                # Get file info
+                file_info = extract_file_info(file.name)
+                
+                # Determine checklist items based on file type
+                checklist_items = []
+                for category, items in VALIDATION_CHECKLIST.items():
+                    if file_info['type'] in category.lower() or 'all' in category.lower():
+                        checklist_items.extend(items)
+                
+                if not checklist_items:
+                    checklist_items = VALIDATION_CHECKLIST.get("Packaging Artwork", [])
+                
+                # Create prompt
+                prompt = create_ai_prompt(text, file.name, file_info, checklist_items)
+                
+                # Call selected AI providers
+                file_results = {
+                    'file_info': file_info,
+                    'text_length': len(text),
+                    'text_preview': text[:500] + '...' if len(text) > 500 else text
                 }
                 
-                report_json = json.dumps(report, indent=2)
-                st.download_button(
-                    label="Download JSON Report",
-                    data=report_json,
-                    file_name=f"validation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
+                if 'claude' in providers:
+                    with st.spinner(f"🤖 Claude reviewing {file.name}..."):
+                        claude_result = call_claude(prompt, api_keys['claude'])
+                        file_results['claude'] = claude_result
+                        time.sleep(0.5)  # Rate limiting
+                
+                if 'openai' in providers:
+                    with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
+                        openai_result = call_openai(prompt, api_keys['openai'])
+                        file_results['openai'] = openai_result
+                        time.sleep(0.5)  # Rate limiting
+                
+                results[file.name] = file_results
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+            
+            status_text.text("✅ AI validation complete!")
+            st.session_state.validation_results = results
+            st.balloons()
+    
+    # Display results
+    if st.session_state.validation_results:
+        st.markdown("---")
+        st.markdown("## 📊 AI Validation Results")
+        
+        for filename, file_results in st.session_state.validation_results.items():
+            with st.expander(f"📄 {filename}", expanded=True):
+                # File info
+                file_info = file_results['file_info']
+                st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']} | **Text extracted:** {file_results['text_length']} chars")
+                
+                # Show results based on providers used
+                if len(st.session_state.ai_providers) > 1 and 'claude' in file_results and 'openai' in file_results:
+                    # Compare both
+                    st.markdown("### 🔄 AI Comparison")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("#### 🤖 Claude Results")
+                        display_ai_results(file_results['claude'], 'Claude')
+                    
+                    with col2:
+                        st.markdown("#### 🤖 OpenAI Results")
+                        display_ai_results(file_results['openai'], 'OpenAI')
+                else:
+                    # Single provider
+                    if 'claude' in file_results:
+                        st.markdown("#### 🤖 Claude Validation")
+                        display_ai_results(file_results['claude'], 'Claude')
+                    
+                    if 'openai' in file_results:
+                        st.markdown("#### 🤖 OpenAI Validation")
+                        display_ai_results(file_results['openai'], 'OpenAI')
+        
+        # Export results
+        st.markdown("### 💾 Export Results")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # JSON export
+            export_data = {
+                'timestamp': datetime.now().isoformat(),
+                'providers': st.session_state.ai_providers,
+                'results': st.session_state.validation_results
+            }
+            
+            st.download_button(
+                label="📥 Download JSON Report",
+                data=json.dumps(export_data, indent=2),
+                file_name=f"ai_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+        
+        with col2:
+            # Summary export
+            summary = generate_summary_report(st.session_state.validation_results)
+            
+            st.download_button(
+                label="📥 Download Summary Report",
+                data=summary,
+                file_name=f"validation_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain"
+            )
     
     else:
         # Instructions
         st.info("""
-        👆 **Upload your packaging and label files to begin validation**
+        ### 🚀 How to Use AI Validation
         
-        **What this tool checks:**
-        - ✅ Origin consistency (Made in China)
-        - ✅ Color matching between files
+        1. **Select AI Provider(s)**: Choose Claude, OpenAI, or both for comparison
+        2. **Upload Files**: Add your packaging PDFs and text files
+        3. **Review Results**: AI will check against the full validation checklist
+        4. **Export Reports**: Download detailed validation results
+        
+        **What AI Checks:**
+        - ✅ Complete checklist validation
+        - ✅ Spelling and grammar
+        - ✅ Origin marking (Made in China)
+        - ✅ Color consistency
         - ✅ SKU format validation
-        - ✅ Required text presence (Vive branding)
-        - ✅ Basic spelling checks
-        - ✅ Barcode/QR code presence
+        - ✅ Brand presence
+        - ✅ Overall quality assessment
         
-        **Supported file types:** PDF, PNG, JPG, JPEG, TXT
+        **Benefits of AI Review:**
+        - 🎯 More thorough than pattern matching
+        - 🔍 Catches subtle issues
+        - 💡 Provides specific recommendations
+        - ⚡ Fast and consistent
         """)
+
+def generate_summary_report(results):
+    """Generate a text summary of all results"""
+    summary = f"""AI PACKAGING VALIDATION REPORT
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Providers Used: {', '.join(st.session_state.ai_providers)}
+
+SUMMARY
+=======
+Files Validated: {len(results)}
+
+DETAILED RESULTS
+===============
+
+"""
+    
+    for filename, file_results in results.items():
+        summary += f"\n{filename}\n" + "-" * len(filename) + "\n"
+        summary += f"Type: {file_results['file_info']['type']}\n"
+        summary += f"Color: {file_results['file_info']['color']}\n"
         
-        # Example workflow
-        with st.expander("📖 Example Workflow"):
-            st.markdown("""
-            1. **Collect all files for a product** (all color variants)
-               - Packaging artwork (box designs)
-               - Product labels/tags
-               - Shipping marks
-               - Manuals/quick start guides
-            
-            2. **Upload all files at once**
-               - The tool will analyze them together
-               - Cross-check for consistency
-            
-            3. **Review validation results**
-               - Fix any errors (red items)
-               - Review warnings (yellow items)
-               - Confirm all checks pass
-            
-            4. **Download report for records**
-               - Keep validation report with job files
-            """)
+        for provider in ['claude', 'openai']:
+            if provider in file_results:
+                result = file_results[provider]
+                if 'OVERALL_ASSESSMENT' in result:
+                    summary += f"\n{provider.upper()} Assessment: {result['OVERALL_ASSESSMENT']}\n"
+                    
+                    if 'CRITICAL_ISSUES' in result and result['CRITICAL_ISSUES']:
+                        summary += "Critical Issues:\n"
+                        for issue in result['CRITICAL_ISSUES']:
+                            summary += f"  - {issue}\n"
+                    
+                    if 'WARNINGS' in result and result['WARNINGS']:
+                        summary += "Warnings:\n"
+                        for warning in result['WARNINGS']:
+                            summary += f"  - {warning}\n"
+        
+        summary += "\n" + "="*50 + "\n"
+    
+    return summary
 
 if __name__ == "__main__":
-    # Check dependencies
-    required_packages = {
-        'streamlit': 'streamlit',
-        'PIL': 'pillow',
-        'fitz': 'PyMuPDF',
-        'pytesseract': 'pytesseract'
-    }
-    
-    missing_packages = []
-    for package, pip_name in required_packages.items():
-        try:
-            __import__(package)
-        except ImportError:
-            missing_packages.append(pip_name)
-    
-    if missing_packages:
-        st.error(f"""
-        Missing required packages. Please install:
-        ```
-        pip install {' '.join(missing_packages)}
-        ```
-        
-        For OCR support, also install Tesseract:
-        - Mac: `brew install tesseract`
-        - Ubuntu: `sudo apt-get install tesseract-ocr`
-        - Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
-        """)
-    else:
-        main()
+    main()
