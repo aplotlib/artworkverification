@@ -1,6 +1,6 @@
 """
 packaging_validator_fixed.py - Fixed AI-powered packaging and label validator
-Resolves UNKNOWN results issue with better response parsing and error handling
+Resolves duplicate key error and improves overall stability
 """
 
 import streamlit as st
@@ -16,6 +16,7 @@ from collections import defaultdict
 import time
 import base64
 import io
+import uuid
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -523,8 +524,8 @@ def call_openai(prompt, api_key):
         logger.error(f"OpenAI API error: {e}")
         return {"error": str(e), "overall_assessment": "ERROR"}
 
-def display_ai_results(results, provider, file_key=""):
-    """Display AI validation results with better error handling"""
+def display_ai_results(results, provider, file_key="", unique_id=""):
+    """Display AI validation results with better error handling and unique keys"""
     
     # Check for errors first
     if "error" in results:
@@ -546,8 +547,8 @@ def display_ai_results(results, provider, file_key=""):
     
     st.markdown(f'<div class="validation-result {assessment_color}"><strong>Overall Assessment:</strong> {assessment}</div>', unsafe_allow_html=True)
     
-    # Debug info in development - include file_key to make unique
-    debug_key = f"debug_{provider}_{file_key}".replace(" ", "_").replace(".", "_")
+    # Debug info in development - use unique key with UUID
+    debug_key = f"debug_{provider}_{file_key}_{unique_id}_{uuid.uuid4().hex[:8]}"
     if st.checkbox(f"Show {provider} debug info", key=debug_key):
         st.markdown(f'<div class="debug-box">{json.dumps(results, indent=2)}</div>', unsafe_allow_html=True)
     
@@ -608,6 +609,77 @@ def display_ai_results(results, provider, file_key=""):
         for issue in consistency:
             st.markdown(f"- {issue}")
 
+def generate_summary_report(results):
+    """Generate summary report of all validation results"""
+    report = []
+    report.append(f"AI PACKAGING VALIDATION REPORT")
+    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report.append("=" * 60)
+    report.append("")
+    
+    # Count overall results
+    total_files = len(results)
+    approved = 0
+    needs_revision = 0
+    review_required = 0
+    
+    for filename, file_results in results.items():
+        for provider in ['claude', 'openai']:
+            if provider in file_results and isinstance(file_results[provider], dict):
+                assessment = file_results[provider].get('overall_assessment', 'UNKNOWN')
+                if assessment == 'APPROVED':
+                    approved += 1
+                elif assessment == 'NEEDS_REVISION':
+                    needs_revision += 1
+                elif assessment == 'REVIEW_REQUIRED':
+                    review_required += 1
+    
+    report.append(f"SUMMARY:")
+    report.append(f"Total Files: {total_files}")
+    report.append(f"Approved: {approved}")
+    report.append(f"Needs Revision: {needs_revision}")
+    report.append(f"Review Required: {review_required}")
+    report.append("")
+    report.append("=" * 60)
+    report.append("")
+    
+    # Detailed results per file
+    for filename, file_results in results.items():
+        report.append(f"FILE: {filename}")
+        report.append("-" * 40)
+        
+        for provider in ['claude', 'openai']:
+            if provider in file_results and isinstance(file_results[provider], dict):
+                ai_results = file_results[provider]
+                report.append(f"\n{provider.upper()} Assessment: {ai_results.get('overall_assessment', 'UNKNOWN')}")
+                
+                # Critical issues
+                critical = ai_results.get('critical_issues', [])
+                if critical:
+                    report.append("\nCritical Issues:")
+                    for issue in critical:
+                        report.append(f"  - {issue}")
+                
+                # Warnings
+                warnings = ai_results.get('warnings', [])
+                if warnings:
+                    report.append("\nWarnings:")
+                    for warning in warnings:
+                        report.append(f"  - {warning}")
+                
+                # Spelling errors
+                spelling = ai_results.get('spelling_errors', [])
+                if spelling:
+                    report.append("\nSpelling Errors:")
+                    for error in spelling:
+                        report.append(f"  - {error}")
+        
+        report.append("")
+        report.append("=" * 60)
+        report.append("")
+    
+    return "\n".join(report)
+
 def test_ai_connection(api_keys):
     """Test AI connections with a simple prompt"""
     st.markdown("### 🧪 Testing AI Connections...")
@@ -664,6 +736,8 @@ def main():
         st.session_state.validation_results = None
     if 'ai_providers' not in st.session_state:
         st.session_state.ai_providers = []
+    if 'validation_counter' not in st.session_state:
+        st.session_state.validation_counter = 0
     
     # Header
     st.markdown("""
@@ -765,6 +839,10 @@ def main():
     if uploaded_files and providers:
         # Validate button
         if st.button("🚀 Start AI Validation", type="primary", use_container_width=True):
+            # Increment counter to ensure unique IDs
+            st.session_state.validation_counter += 1
+            validation_id = st.session_state.validation_counter
+            
             results = {}
             
             progress_bar = st.progress(0)
@@ -805,7 +883,8 @@ def main():
                 file_results = {
                     'file_info': file_info,
                     'text_length': len(text),
-                    'text_preview': text[:500] + '...' if len(text) > 500 else text
+                    'text_preview': text[:500] + '...' if len(text) > 500 else text,
+                    'validation_id': validation_id
                 }
                 
                 if 'claude' in providers and 'claude' in api_keys:
@@ -843,6 +922,7 @@ def main():
             with st.expander(f"📄 {filename}", expanded=True):
                 # File info
                 file_info = file_results['file_info']
+                validation_id = file_results.get('validation_id', 0)
                 st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']} | **Text extracted:** {file_results['text_length']} chars")
                 
                 # Show results based on providers used
@@ -854,20 +934,20 @@ def main():
                     
                     with col1:
                         st.markdown("#### 🤖 Claude Results")
-                        display_ai_results(file_results['claude'], 'Claude', filename)
+                        display_ai_results(file_results['claude'], 'Claude', filename, f"compare_{validation_id}")
                     
                     with col2:
                         st.markdown("#### 🤖 OpenAI Results")
-                        display_ai_results(file_results['openai'], 'OpenAI', filename)
+                        display_ai_results(file_results['openai'], 'OpenAI', filename, f"compare_{validation_id}")
                 else:
                     # Single provider
                     if 'claude' in file_results:
                         st.markdown("#### 🤖 Claude Validation")
-                        display_ai_results(file_results['claude'], 'Claude', filename)
+                        display_ai_results(file_results['claude'], 'Claude', filename, f"single_{validation_id}")
                     
                     if 'openai' in file_results:
                         st.markdown("#### 🤖 OpenAI Validation")
-                        display_ai_results(file_results['openai'], 'OpenAI', filename)
+                        display_ai_results(file_results['openai'], 'OpenAI', filename, f"single_{validation_id}")
         
         # Export results
         st.markdown("### 💾 Export Results")
