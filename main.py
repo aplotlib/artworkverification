@@ -78,6 +78,22 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
     logger.warning("PyMuPDF not available")
 
+# Try to import OCR libraries
+try:
+    import pytesseract
+    from PIL import Image
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    TESSERACT_AVAILABLE = False
+    logger.warning("Tesseract OCR not available")
+
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    EASYOCR_AVAILABLE = False
+    logger.warning("EasyOCR not available")
+
 # Validation checklist from the document
 VALIDATION_CHECKLIST = {
     "Packaging Artwork": [
@@ -264,68 +280,82 @@ def get_api_keys():
     
     return {k: v for k, v in keys.items() if v}
 
-def extract_text_from_pdf(file_bytes):
+def extract_text_from_pdf(file_bytes, use_ocr=False):
     """Extract text from PDF using multiple methods
     Returns: tuple (extracted_text, method_used)
     """
     extracted_text = ""
     method_used = ""
     
-    # Method 1: Try pdfplumber first (best for complex layouts)
-    if PDFPLUMBER_AVAILABLE:
-        try:
-            import pdfplumber
-            with pdfplumber.open(file_bytes) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
+    # First, analyze the PDF content
+    file_bytes.seek(0)
+    pdf_info = check_pdf_content_type(file_bytes)
+    
+    # Log what we found
+    logger.info(f"PDF type detected: {pdf_info['pdf_type']} - Pages: {pdf_info['num_pages']}, Images: {pdf_info['image_count']}, Text chars: {pdf_info['text_length']}")
+    
+    # If it's empty, return immediately
+    if pdf_info['pdf_type'] == 'empty' and pdf_info['num_pages'] == 0:
+        return "[Empty PDF - no pages found]", "error"
+    
+    # Try text extraction if there's text or mixed content
+    if pdf_info['has_text'] or pdf_info['pdf_type'] == 'mixed':
+        # Method 1: Try pdfplumber first (best for complex layouts)
+        if PDFPLUMBER_AVAILABLE:
+            try:
+                import pdfplumber
+                file_bytes.seek(0)
+                with pdfplumber.open(file_bytes) as pdf:
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            extracted_text += page_text + "\n"
+                
+                if extracted_text.strip():
+                    method_used = "pdfplumber"
+                    logger.info(f"Successfully extracted text using pdfplumber: {len(extracted_text)} chars")
+            except Exception as e:
+                logger.warning(f"pdfplumber extraction failed: {e}")
+        
+        # Method 2: Try PyMuPDF if pdfplumber didn't work
+        if not extracted_text.strip() and PYMUPDF_AVAILABLE:
+            try:
+                import fitz
+                file_bytes.seek(0)
+                pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
+                file_bytes.seek(0)
+                
+                for page_num in range(len(pdf_document)):
+                    page = pdf_document[page_num]
+                    page_text = page.get_text()
                     if page_text:
                         extracted_text += page_text + "\n"
-            
-            if extracted_text.strip():
-                method_used = "pdfplumber"
-                logger.info(f"Successfully extracted text using pdfplumber: {len(extracted_text)} chars")
-        except Exception as e:
-            logger.warning(f"pdfplumber extraction failed: {e}")
-    
-    # Method 2: Try PyMuPDF if pdfplumber didn't work
-    if not extracted_text.strip() and PYMUPDF_AVAILABLE:
-        try:
-            import fitz
-            file_bytes.seek(0)  # Reset stream position
-            pdf_document = fitz.open(stream=file_bytes.read(), filetype="pdf")
-            file_bytes.seek(0)  # Reset stream position again
-            
-            for page_num in range(len(pdf_document)):
-                page = pdf_document[page_num]
-                page_text = page.get_text()
-                if page_text:
-                    extracted_text += page_text + "\n"
-            
-            pdf_document.close()
-            
-            if extracted_text.strip():
-                method_used = "PyMuPDF"
-                logger.info(f"Successfully extracted text using PyMuPDF: {len(extracted_text)} chars")
-        except Exception as e:
-            logger.warning(f"PyMuPDF extraction failed: {e}")
-    
-    # Method 3: Fall back to PyPDF2
-    if not extracted_text.strip():
-        try:
-            file_bytes.seek(0)  # Reset stream position
-            pdf_reader = PyPDF2.PdfReader(file_bytes)
-            for page_num in range(len(pdf_reader.pages)):
-                page = pdf_reader.pages[page_num]
-                page_text = page.extract_text()
                 
-                if page_text:
-                    extracted_text += page_text + "\n"
-            
-            if extracted_text.strip():
-                method_used = "PyPDF2"
-                logger.info(f"Successfully extracted text using PyPDF2: {len(extracted_text)} chars")
-        except Exception as e:
-            logger.warning(f"PyPDF2 extraction failed: {e}")
+                pdf_document.close()
+                
+                if extracted_text.strip():
+                    method_used = "PyMuPDF"
+                    logger.info(f"Successfully extracted text using PyMuPDF: {len(extracted_text)} chars")
+            except Exception as e:
+                logger.warning(f"PyMuPDF extraction failed: {e}")
+        
+        # Method 3: Fall back to PyPDF2
+        if not extracted_text.strip():
+            try:
+                file_bytes.seek(0)
+                pdf_reader = PyPDF2.PdfReader(file_bytes)
+                for page_num in range(len(pdf_reader.pages)):
+                    page = pdf_reader.pages[page_num]
+                    page_text = page.extract_text()
+                    
+                    if page_text:
+                        extracted_text += page_text + "\n"
+                
+                if extracted_text.strip():
+                    method_used = "PyPDF2"
+                    logger.info(f"Successfully extracted text using PyPDF2: {len(extracted_text)} chars")
+            except Exception as e:
+                logger.warning(f"PyPDF2 extraction failed: {e}")
     
     # Clean up extracted text if we got any
     if extracted_text.strip():
@@ -340,70 +370,19 @@ def extract_text_from_pdf(file_bytes):
         logger.info(f"Text successfully extracted using {method_used}: {len(clean_text)} chars")
         return clean_text, method_used
     
-    # Only check for image-based PDF if no text was extracted
-    logger.info("No text extracted from any method, checking if PDF is image-based...")
+    # If no text was extracted and it's image-based, try OCR if enabled
+    if pdf_info['pdf_type'] == 'image-based' and use_ocr:
+        logger.info("Attempting OCR on image-based PDF...")
+        file_bytes.seek(0)
+        return extract_text_with_ocr(file_bytes)
     
-    # If no text was extracted, check if it's an image-based PDF
-    try:
-        file_bytes.seek(0)  # Reset stream position
-        pdf_reader = PyPDF2.PdfReader(file_bytes)
-        num_pages = len(pdf_reader.pages)
-        
-        # Check if PDF has images (with better error handling)
-        has_images = False
-        image_count = 0
-        
-        try:
-            for page_idx, page in enumerate(pdf_reader.pages):
-                try:
-                    # Get resources safely
-                    resources = page.get('/Resources')
-                    if not resources:
-                        continue
-                    
-                    # Resolve IndirectObject if needed
-                    if hasattr(resources, 'get_object'):
-                        resources = resources.get_object()
-                    
-                    # Get XObject
-                    xobject = None
-                    if isinstance(resources, dict) and '/XObject' in resources:
-                        xobject = resources['/XObject']
-                        if hasattr(xobject, 'get_object'):
-                            xobject = xobject.get_object()
-                    
-                    # Check for images in XObject
-                    if xobject and isinstance(xobject, dict):
-                        for obj_name in xobject:
-                            try:
-                                obj = xobject[obj_name]
-                                if hasattr(obj, 'get_object'):
-                                    obj = obj.get_object()
-                                
-                                if isinstance(obj, dict) and obj.get('/Subtype') == '/Image':
-                                    has_images = True
-                                    image_count += 1
-                            except Exception:
-                                # Skip problematic objects
-                                continue
-                    
-                except Exception as e:
-                    # Skip problematic pages
-                    logger.debug(f"Skipping page {page_idx} due to error: {type(e).__name__}")
-                    continue
-        
-        except Exception as e:
-            logger.debug(f"Error during image detection: {type(e).__name__}")
-        
-        if has_images:
-            logger.info(f"Found {image_count} images in PDF with {num_pages} pages")
-            return "[Image-based PDF detected - text extraction not possible. Please use text-based PDFs or enable OCR]", "error"
-        else:
-            return f"[No text could be extracted from PDF - {num_pages} pages found but no readable content]", "error"
-            
-    except Exception as e:
-        logger.warning(f"Could not analyze PDF structure: {type(e).__name__}")
-        return "[No text could be extracted from PDF - unable to determine if image-based]", "error"
+    # Return appropriate message based on PDF type
+    if pdf_info['pdf_type'] == 'image-based':
+        return f"[Image-based PDF detected - {pdf_info['num_pages']} pages with {pdf_info['image_count']} images. Enable OCR to extract text]", "error"
+    elif pdf_info['pdf_type'] == 'empty':
+        return f"[Empty PDF - {pdf_info['num_pages']} pages but no content found]", "error"
+    else:
+        return f"[No text could be extracted from PDF - {pdf_info['num_pages']} pages analyzed]", "error"
 
 def extract_file_info(filename):
     """Extract product and variant info from filename"""
@@ -441,6 +420,172 @@ def extract_file_info(filename):
     info['product'] = ' '.join(product_parts[:3])
     
     return info
+
+
+def check_pdf_content_type(file_bytes):
+    """
+    Analyze PDF to determine its content type
+    Returns: dict with content analysis
+    """
+    result = {
+        'has_text': False,
+        'has_images': False,
+        'num_pages': 0,
+        'image_count': 0,
+        'text_length': 0,
+        'pdf_type': 'empty'  # empty, text-based, image-based, mixed
+    }
+    
+    try:
+        file_bytes.seek(0)
+        
+        # First check with PyMuPDF if available (best for image detection)
+        if PYMUPDF_AVAILABLE:
+            try:
+                import fitz
+                doc = fitz.open(stream=file_bytes.read(), filetype="pdf")
+                file_bytes.seek(0)
+                
+                result['num_pages'] = len(doc)
+                
+                for page in doc:
+                    # Check for text
+                    text = page.get_text()
+                    if text and text.strip():
+                        result['has_text'] = True
+                        result['text_length'] += len(text)
+                    
+                    # Check for images
+                    image_list = page.get_images()
+                    if image_list:
+                        result['has_images'] = True
+                        result['image_count'] += len(image_list)
+                
+                doc.close()
+                
+            except Exception as e:
+                logger.debug(f"PyMuPDF content check failed: {e}")
+        
+        # Fallback to PyPDF2 if PyMuPDF didn't work
+        if not result['has_images'] and not result['has_text']:
+            try:
+                pdf_reader = PyPDF2.PdfReader(file_bytes)
+                result['num_pages'] = len(pdf_reader.pages)
+                
+                for page in pdf_reader.pages:
+                    # Check for text
+                    text = page.extract_text()
+                    if text and text.strip():
+                        result['has_text'] = True
+                        result['text_length'] += len(text)
+                    
+                    # Check for images in resources
+                    if '/Resources' in page:
+                        resources = page['/Resources']
+                        if hasattr(resources, 'get_object'):
+                            resources = resources.get_object()
+                        
+                        if isinstance(resources, dict) and '/XObject' in resources:
+                            xobject = resources['/XObject']
+                            if hasattr(xobject, 'get_object'):
+                                xobject = xobject.get_object()
+                            
+                            if isinstance(xobject, dict):
+                                for obj_name in xobject:
+                                    try:
+                                        obj = xobject[obj_name]
+                                        if hasattr(obj, 'get_object'):
+                                            obj = obj.get_object()
+                                        
+                                        if isinstance(obj, dict) and obj.get('/Subtype') == '/Image':
+                                            result['has_images'] = True
+                                            result['image_count'] += 1
+                                    except:
+                                        continue
+            
+            except Exception as e:
+                logger.debug(f"PyPDF2 content check failed: {e}")
+        
+        # Determine PDF type
+        if result['has_text'] and result['has_images']:
+            result['pdf_type'] = 'mixed'
+        elif result['has_text']:
+            result['pdf_type'] = 'text-based'
+        elif result['has_images']:
+            result['pdf_type'] = 'image-based'
+        else:
+            result['pdf_type'] = 'empty'
+        
+        logger.info(f"PDF analysis: {result['pdf_type']} ({result['num_pages']} pages, {result['text_length']} chars text, {result['image_count']} images)")
+        
+    except Exception as e:
+        logger.error(f"PDF content analysis failed: {e}")
+    
+    return result
+
+
+def extract_text_with_ocr(file_bytes, page_limit=5):
+    """
+    Extract text from image-based PDF using OCR
+    """
+    extracted_text = ""
+    
+    if not PYMUPDF_AVAILABLE:
+        return "[OCR requires PyMuPDF library]", "error"
+    
+    try:
+        import fitz
+        from PIL import Image
+        import io
+        
+        doc = fitz.open(stream=file_bytes.read(), filetype="pdf")
+        file_bytes.seek(0)
+        
+        pages_to_process = min(len(doc), page_limit)
+        
+        for page_num in range(pages_to_process):
+            page = doc[page_num]
+            
+            # Convert page to image
+            mat = fitz.Matrix(2, 2)  # 2x zoom for better OCR
+            pix = page.get_pixmap(matrix=mat)
+            img_data = pix.pil_tobytes(format="PNG")
+            img = Image.open(io.BytesIO(img_data))
+            
+            # OCR the image
+            page_text = ""
+            
+            if TESSERACT_AVAILABLE:
+                try:
+                    import pytesseract
+                    page_text = pytesseract.image_to_string(img)
+                    if page_text.strip():
+                        extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                except Exception as e:
+                    logger.warning(f"Tesseract OCR failed: {e}")
+            
+            elif EASYOCR_AVAILABLE:
+                try:
+                    # Initialize reader (this is slow, consider caching)
+                    import easyocr
+                    reader = easyocr.Reader(['en'])
+                    results = reader.readtext(img_data)
+                    page_text = ' '.join([text[1] for text in results])
+                    if page_text.strip():
+                        extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                except Exception as e:
+                    logger.warning(f"EasyOCR failed: {e}")
+        
+        doc.close()
+        
+        if extracted_text.strip():
+            return extracted_text.strip(), "OCR"
+        else:
+            return "[OCR completed but no text found in images]", "error"
+            
+    except Exception as e:
+        logger.error(f"OCR extraction failed: {e}")
+        return f"[OCR failed: {str(e)}]", "error"
 
 def create_ai_prompt(text, filename, file_info, checklist_items):
     """Create comprehensive prompt for AI validation"""
@@ -908,6 +1053,8 @@ def main():
         st.session_state.ai_providers = []
     if 'validation_counter' not in st.session_state:
         st.session_state.validation_counter = 0
+    if 'use_ocr' not in st.session_state:
+        st.session_state.use_ocr = False
     
     # Header
     st.markdown("""
@@ -965,17 +1112,59 @@ def main():
         
         st.success("✅ PyPDF2 (fallback)")
         
+        st.markdown("---")
+        
+        # OCR Options
+        st.markdown("### 🔍 OCR Options")
+        
+        ocr_available = False
+        if TESSERACT_AVAILABLE:
+            st.success("✅ Tesseract OCR")
+            ocr_available = True
+        else:
+            st.info("❌ Tesseract not installed")
+        
+        if EASYOCR_AVAILABLE:
+            st.success("✅ EasyOCR")
+            ocr_available = True
+        else:
+            st.info("❌ EasyOCR not installed")
+        
+        # OCR toggle
+        use_ocr = False
+        if ocr_available:
+            use_ocr = st.checkbox("Enable OCR for image-based PDFs", value=st.session_state.get('use_ocr', False), 
+                                help="This will attempt to extract text from images. May be slow for large files.")
+            st.session_state.use_ocr = use_ocr
+        else:
+            st.info("Install pytesseract or easyocr to enable OCR")
+            with st.expander("OCR Setup"):
+                st.markdown("""
+                **Option 1: Tesseract (faster)**
+                ```bash
+                # Install Tesseract
+                sudo apt-get install tesseract-ocr
+                pip install pytesseract pillow
+                ```
+                
+                **Option 2: EasyOCR (easier)**
+                ```bash
+                pip install easyocr pillow
+                ```
+                """)
+            st.session_state.use_ocr = False
+        
         with st.expander("PDF Tips"):
             st.markdown("""
             **For best results:**
             - Use text-based PDFs (not scanned)
             - Export from source with text layers
-            - Avoid image-only PDFs
+            - Enable OCR for image-based PDFs
             
             **If extraction fails:**
             - Re-export the PDF
             - Use Adobe Acrobat's OCR
-            - Try online PDF-to-text tools
+            - Enable OCR option above
             """)
         
         st.markdown("---")
