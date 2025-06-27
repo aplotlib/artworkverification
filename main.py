@@ -26,8 +26,9 @@ except ImportError:
     CHARDET_AVAILABLE = False
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Page config
 st.set_page_config(
@@ -253,7 +254,9 @@ def get_api_keys():
     return {k: v for k, v in keys.items() if v}
 
 def extract_text_from_pdf(file_bytes):
-    """Extract text from PDF using multiple methods"""
+    """Extract text from PDF using multiple methods
+    Returns: tuple (extracted_text, method_used)
+    """
     extracted_text = ""
     method_used = ""
     
@@ -297,6 +300,7 @@ def extract_text_from_pdf(file_bytes):
     # Method 3: Fall back to PyPDF2
     if not extracted_text.strip():
         try:
+            file_bytes.seek(0)  # Reset stream position
             pdf_reader = PyPDF2.PdfReader(file_bytes)
             for page_num in range(len(pdf_reader.pages)):
                 page = pdf_reader.pages[page_num]
@@ -321,31 +325,49 @@ def extract_text_from_pdf(file_bytes):
         extracted_text = re.sub(r'\n+', '\n', extracted_text)
         
         logger.info(f"Text extracted using {method_used}: {len(extracted_text)} chars")
-        return extracted_text.strip()
+        return extracted_text.strip(), method_used
     
     # If no text was extracted, check if it's an image-based PDF
     try:
+        file_bytes.seek(0)  # Reset stream position
         pdf_reader = PyPDF2.PdfReader(file_bytes)
         num_pages = len(pdf_reader.pages)
         
-        # Check if PDF has images
+        # Check if PDF has images (with better error handling)
         has_images = False
-        for page in pdf_reader.pages:
-            if '/XObject' in page.get('/Resources', {}):
-                xobject = page['/Resources']['/XObject'].get_object()
-                for obj in xobject:
-                    if xobject[obj]['/Subtype'] == '/Image':
-                        has_images = True
-                        break
+        try:
+            for page in pdf_reader.pages:
+                try:
+                    resources = page.get('/Resources', {})
+                    if resources and hasattr(resources, 'get'):
+                        xobject = resources.get('/XObject', {})
+                        if xobject and hasattr(xobject, 'get_object'):
+                            xobject_dict = xobject.get_object()
+                            if isinstance(xobject_dict, dict):
+                                for obj in xobject_dict:
+                                    try:
+                                        if hasattr(xobject_dict[obj], 'get') and xobject_dict[obj].get('/Subtype') == '/Image':
+                                            has_images = True
+                                            break
+                                    except:
+                                        continue
+                except Exception as e:
+                    logger.debug(f"Error checking page resources: {e}")
+                    continue
+                
+                if has_images:
+                    break
+        except Exception as e:
+            logger.debug(f"Error during image detection: {e}")
         
         if has_images:
-            return "[Image-based PDF detected - text extraction not possible. Please use text-based PDFs or enable OCR]"
+            return "[Image-based PDF detected - text extraction not possible. Please use text-based PDFs or enable OCR]", "error"
         else:
-            return f"[No text could be extracted from PDF - {num_pages} pages found but no readable content]"
+            return f"[No text could be extracted from PDF - {num_pages} pages found but no readable content]", "error"
             
     except Exception as e:
         logger.error(f"PDF analysis error: {e}")
-        return f"[Error analyzing PDF: {str(e)}]"
+        return f"[No text could be extracted from PDF - please check file format]", "error"
 
 def extract_file_info(filename):
     """Extract product and variant info from filename"""
@@ -386,8 +408,12 @@ def extract_file_info(filename):
 
 def create_ai_prompt(text, filename, file_info, checklist_items):
     """Create comprehensive prompt for AI validation"""
-    # Don't send image-based PDF error messages to AI
-    if text.startswith("[") and text.endswith("]"):
+    # Don't send error messages to AI
+    if not text or (text.startswith("[") and text.endswith("]")):
+        return None
+        
+    # Don't process if text is too short
+    if len(text.strip()) < 10:
         return None
         
     prompt = f"""You are a quality control expert reviewing packaging and label files for Vive Health medical devices.
@@ -1046,18 +1072,24 @@ def main():
                     # Create prompt
                     prompt = create_ai_prompt(text, file.name, file_info, checklist_items)
                     
-                    # Call selected AI providers
-                    if 'claude' in providers and 'claude' in api_keys:
-                        with st.spinner(f"🤖 Claude reviewing {file.name}..."):
-                            claude_result = call_claude(prompt, api_keys['claude'])
-                            file_results['claude'] = claude_result
-                            time.sleep(0.5)  # Rate limiting
-                    
-                    if 'openai' in providers and 'openai' in api_keys:
-                        with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
-                            openai_result = call_openai(prompt, api_keys['openai'])
-                            file_results['openai'] = openai_result
-                            time.sleep(0.5)  # Rate limiting
+                    if prompt:  # Only call AI if we have a valid prompt
+                        # Call selected AI providers
+                        if 'claude' in providers and 'claude' in api_keys:
+                            with st.spinner(f"🤖 Claude reviewing {file.name}..."):
+                                claude_result = call_claude(prompt, api_keys['claude'])
+                                file_results['claude'] = claude_result
+                                time.sleep(0.5)  # Rate limiting
+                        
+                        if 'openai' in providers and 'openai' in api_keys:
+                            with st.spinner(f"🤖 OpenAI reviewing {file.name}..."):
+                                openai_result = call_openai(prompt, api_keys['openai'])
+                                file_results['openai'] = openai_result
+                                time.sleep(0.5)  # Rate limiting
+                    else:
+                        # No valid prompt could be created
+                        logger.warning(f"Could not create valid prompt for {file.name}")
+                        file_results['analysis_skipped'] = True
+                        file_results['skip_reason'] = "Insufficient text for analysis"
                 else:
                     # Add placeholder results for failed extractions
                     file_results['analysis_skipped'] = True
@@ -1094,14 +1126,23 @@ def main():
                     st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']}")
                     st.info(f"**Reason:** {file_results.get('skip_reason', 'Unknown error')}")
                     
-                    # Provide helpful suggestions
-                    st.markdown("### 💡 Suggestions:")
-                    st.markdown("""
-                    - Ensure the PDF contains actual text (not just images)
-                    - Try re-exporting the PDF with text layers
-                    - For scanned documents, use OCR software first
-                    - Save as a text-based PDF from the source application
-                    """)
+                    # Provide helpful suggestions based on the error
+                    if "[Image-based PDF" in file_results.get('skip_reason', ''):
+                        st.markdown("### 💡 Suggestions for Image-based PDFs:")
+                        st.markdown("""
+                        - Use Adobe Acrobat's OCR feature to convert to text
+                        - Re-export from the original design software with text layers
+                        - Use online OCR services like SmallPDF or ILovePDF
+                        - Ensure "Export as PDF" includes text, not just images
+                        """)
+                    else:
+                        st.markdown("### 💡 General Suggestions:")
+                        st.markdown("""
+                        - Ensure the PDF contains actual text (not just images)
+                        - Try re-exporting the PDF with text layers
+                        - Check that the file isn't corrupted
+                        - Save as a text-based PDF from the source application
+                        """)
                     continue
                 
                 st.markdown(f"**Type:** {file_info['type']} | **Color:** {file_info['color']} | **Text extracted:** {file_results['text_length']} chars")
