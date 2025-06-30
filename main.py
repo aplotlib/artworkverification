@@ -211,8 +211,6 @@ class AIReviewer:
     def get_batch_review(all_products_data, custom_instructions, model_choice, api_keys):
         if not model_choice: return {"error": "No AI model selected or configured."}
         
-        # --- MODIFICATION START ---
-        # The AI prompt is upgraded to be more nuanced and act as a Design Manager.
         prompt = f"""
         You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
 
@@ -238,23 +236,15 @@ class AIReviewer:
         4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
         5.  **Repeat** this structured process for every product group.
         """
-        # --- MODIFICATION END ---
         
         try:
             model_input = [prompt]
-            if "Gemini" in model_choice:
-                for product_name, data in all_products_data.items():
-                    model_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
-                    for filename, file_data in data['files'].items():
-                        model_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
-                        for img in file_data['extraction']['images']: model_input.append(img)
-            else:
-                text_content = ""
-                for product_name, data in all_products_data.items():
-                    text_content += f"\n\n--- Start of Product Group: {product_name} ---\n"
-                    for filename, file_data in data['files'].items():
-                         text_content += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
-                model_input.append(text_content)
+            text_content_for_all = ""
+            for product_name, data in all_products_data.items():
+                text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
+                for filename, file_data in data['files'].items():
+                     text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
+            model_input.append(text_content_for_all)
 
             response_text = ""
             if "Claude" in model_choice and CLAUDE_AVAILABLE:
@@ -270,7 +260,14 @@ class AIReviewer:
             elif "Gemini" in model_choice and GEMINI_AVAILABLE:
                 genai.configure(api_key=api_keys['google'])
                 model = genai.GenerativeModel('gemini-1.5-pro-latest')
-                response = model.generate_content(model_input)
+                # Rebuild input for Gemini's multimodal format
+                gemini_input = [prompt]
+                for product_name, data in all_products_data.items():
+                    gemini_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
+                    for filename, file_data in data['files'].items():
+                        gemini_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
+                        for img in file_data['extraction']['images']: gemini_input.append(img)
+                response = model.generate_content(gemini_input)
                 response_text = response.text
             else:
                 return {"error": "Selected AI model is not available or configured correctly."}
@@ -315,6 +312,7 @@ def prepare_report_data_for_export(results):
     """Converts the nested results dictionary to a flat, auditable list for DataFrame creation."""
     report_rows = []
     custom_instructions = st.session_state.get('run_custom_instructions', 'N/A')
+    
     for product_name, data in results.items():
         ai_review = data.get('ai_review', 'N/A')
         product_findings = st.session_state.get(f"findings_{product_name}", {})
@@ -349,7 +347,7 @@ def prepare_report_data_for_export(results):
 
 def render_interactive_ai_review(review_text, product_name):
     """Parses the AI review and renders it with interactive sign-off widgets."""
-    if not review_text: return
+    if not review_text: return True
     claims = re.findall(r"(\*\*Claim:\*\*.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", review_text, re.DOTALL)
     if f"findings_{product_name}" not in st.session_state:
         st.session_state[f"findings_{product_name}"] = {
@@ -360,7 +358,7 @@ def render_interactive_ai_review(review_text, product_name):
     if not claims:
         recommendation = review_text.split("**Recommendation:**")[-1]
         st.markdown(f"**Recommendation:** {recommendation}")
-        return
+        return True
     for i, claim_block in enumerate(claims):
         with st.container(border=True):
             claim_text_full = claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()
@@ -386,8 +384,9 @@ def render_interactive_ai_review(review_text, product_name):
     recommendation = review_text.split("**Recommendation:**")[-1]
     st.markdown(f"**Recommendation:** {recommendation}")
     reviewed_count = sum(1 for state in product_state["states"].values() if state["decision"] != "Pending Review")
-    if reviewed_count == product_state["total"] and product_state["total"] > 0:
-        st.success("✅ Well done! All findings for this product have been reviewed.")
+    if reviewed_count == product_state["total"]:
+        if product_state["total"] > 0:
+            st.success("✅ Well done! All findings for this product have been reviewed.")
         return True
     return False
 
