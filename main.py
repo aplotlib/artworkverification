@@ -1,7 +1,7 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v3.7 FINAL - Implements an interactive checklist for AI findings and makes
-custom instructions apply globally for more robust reviews.
+v3.8 FINAL - Implements an interactive sign-off checklist for AI findings
+and a comprehensive, auditable CSV export.
 
 This application analyzes a complete set of product packaging documents,
 groups them by product, extracts text from various formats, runs automated checks,
@@ -227,8 +227,6 @@ class AIReviewer:
                     full_text_context += file_data['extraction']['text'][:2500]
                     full_text_context += f"\n--- END OF FILE ---\n"
 
-        # --- MODIFICATION START ---
-        # The AI prompt is updated to be more robust and stateful.
         prompt = f"""
         You are a meticulous Quality Control specialist for Vive Health. Your primary goal is to find and provide evidence for critical inconsistencies, typos, or grammatical errors.
         
@@ -247,7 +245,6 @@ class AIReviewer:
         5.  **No Errors:** If a product group is perfect, your report should still include the "Thought Process" and a recommendation of "Approved for Production."
         6.  **Repeat** this entire structured process for every product group in the batch.
         """
-        # --- MODIFICATION END ---
         try:
             if api_type == 'claude':
                 client = anthropic.Anthropic(api_key=api_key, max_retries=3)
@@ -262,22 +259,19 @@ class AIReviewer:
                 )
                 response_text = response.content[0].text
                 ai_reviews = {}
-                # Split the response by product headers to parse the output
                 product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
                 if len(product_sections) > 1:
-                    # Check for a global session config block at the start
                     session_config = product_sections[0]
                     ai_reviews['session_config'] = session_config
 
                     for i in range(1, len(product_sections), 2):
                         product_name_from_ai = product_sections[i].strip()
                         product_review = product_sections[i+1].strip()
-                        # Match the AI's response back to the original product group name
                         for original_product_name in all_products_data.keys():
                             if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
                                 ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
                                 break
-                else: # Fallback if splitting fails
+                else:
                     ai_reviews['batch_summary'] = response_text
                 return ai_reviews
             return {"error": "Selected AI provider logic not fully implemented."}
@@ -302,82 +296,118 @@ def group_files_by_product(uploaded_files):
         groups[base_name].append(file)
     return groups
 
-def prepare_report_data_for_export(results, custom_instructions):
-    """Converts the nested results dictionary to a flat list for DataFrame creation, including custom instructions."""
+# --- MODIFICATION START ---
+# The export function is completely overhauled to create a detailed audit log.
+def prepare_report_data_for_export(results):
+    """Converts the nested results dictionary to a flat, auditable list for DataFrame creation."""
     report_rows = []
+    custom_instructions = st.session_state.get('run_custom_instructions', 'N/A')
+    
     for product_name, data in results.items():
         ai_review = data.get('ai_review', 'N/A')
-        for filename, result in data['files'].items():
-            if 'error' in result:
+        product_findings = st.session_state.get(f"findings_{product_name}", {})
+
+        # Find all claims in the AI review for this product
+        claims = re.findall(r"\*\*Claim:\*\*(.+?)\*\*Evidence:\*\*(.+?)\*\*Reasoning:\*\*(.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", ai_review, re.DOTALL)
+
+        if claims:
+            for i, (claim, evidence, reasoning) in enumerate(claims):
+                finding_state = product_findings.get('states', {}).get(i, {})
                 row = {
-                    'Product': product_name, 'File Name': filename, 'Status': 'PROCESSING ERROR',
-                    'Details': result['error'], 'Document Type': 'N/A', 'SKU': 'N/A',
-                    'AI Review Summary': ai_review, 'Custom Instructions for Run': custom_instructions
+                    'Product': product_name,
+                    'Finding Type': 'AI Discrepancy',
+                    'Details': claim.strip(),
+                    'Evidence': evidence.strip(),
+                    'User Decision': finding_state.get('decision', 'Pending Review'),
+                    'User Notes': finding_state.get('notes', ''),
+                    'Custom Instructions for Run': custom_instructions
                 }
-            else:
-                issues = "; ".join(result['validation']['issues'])
-                warnings = "; ".join(result['validation']['warnings'])
-                details = f"Issues: {issues}. Warnings: {warnings}." if issues or warnings else "All automated checks passed."
-                row = {
-                    'Product': product_name, 'File Name': filename, 'Status': result['validation']['status'],
-                    'Details': details, 'Document Type': result['doc_info']['type'], 'SKU': result['doc_info']['sku'],
-                    'AI Review Summary': ai_review, 'Custom Instructions for Run': custom_instructions
-                }
+                report_rows.append(row)
+        else:
+            # Add a single row for products with no AI findings
+            row = {
+                'Product': product_name, 'Finding Type': 'AI Review', 'Details': 'No discrepancies found.',
+                'Evidence': 'N/A', 'User Decision': 'N/A', 'User Notes': 'N/A',
+                'Custom Instructions for Run': custom_instructions
+            }
             report_rows.append(row)
+
+        # Add rows for automated checks
+        for filename, result in data['files'].items():
+            if result['validation']['issues']:
+                for issue in result['validation']['issues']:
+                    report_rows.append({
+                        'Product': product_name, 'Finding Type': f'Automated Check ({filename})', 'Details': issue,
+                        'Evidence': 'N/A', 'User Decision': 'N/A', 'User Notes': 'N/A',
+                        'Custom Instructions for Run': custom_instructions
+                    })
     return report_rows
+# --- MODIFICATION END ---
 
 def render_interactive_ai_review(review_text, product_name):
-    """Parses the AI review and renders it with interactive checkboxes."""
+    """Parses the AI review and renders it with interactive sign-off widgets."""
     if not review_text:
         return
 
-    # Find all claims to make them interactive
     claims = re.findall(r"(\*\*Claim:\*\*.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", review_text, re.DOTALL)
     
-    if not claims:
-        st.info(review_text)
-        return
-
-    # Initialize state for this product's findings if not already present
+    # Initialize state for this product's findings if it's a new run
     if f"findings_{product_name}" not in st.session_state:
         st.session_state[f"findings_{product_name}"] = {
             "total": len(claims),
-            "checked": 0,
-            "states": {i: False for i in range(len(claims))}
+            "reviewed_count": 0,
+            "states": {i: {"decision": "Pending Review", "notes": ""} for i in range(len(claims))}
         }
-
+    
     product_state = st.session_state[f"findings_{product_name}"]
 
     # Display parts of the review before the first claim
     st.info(review_text.split("**Claim:**")[0])
 
-    for i, claim_block in enumerate(claims):
-        claim_key = f"cb_{product_name}_{i}"
-        
-        # We need a consistent key for the checkbox state across reruns
-        is_checked = st.checkbox(
-            label=f"**Claim:**{claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()}",
-            key=claim_key,
-            value=product_state["states"][i],
-            on_change=lambda: update_checked_count(product_name)
-        )
-        product_state["states"][i] = is_checked
-        
-        # Display the rest of the claim block (Evidence, Reasoning)
-        st.markdown(f"**Evidence:**{claim_block.split('**Evidence:**')[1]}", unsafe_allow_html=True)
+    if not claims:
+        # If there are no claims, just show the recommendation
+        recommendation = review_text.split("**Recommendation:**")[-1]
+        st.markdown(f"**Recommendation:** {recommendation}")
+        return
 
-    # Display the final recommendation
+    for i, claim_block in enumerate(claims):
+        with st.container(border=True):
+            claim_text = f"**Claim:**{claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()}"
+            st.markdown(claim_text)
+            st.markdown(f"**Evidence:**{claim_block.split('**Evidence:**')[1].split('**Reasoning:**')[0].strip()}")
+            st.markdown(f"**Reasoning:**{claim_block.split('**Reasoning:**')[1].strip()}")
+
+            st.markdown("---")
+            
+            # Interactive sign-off widgets
+            cols = st.columns([2, 3])
+            decision_key = f"decision_{product_name}_{i}"
+            notes_key = f"notes_{product_name}_{i}"
+
+            with cols[0]:
+                product_state["states"][i]["decision"] = st.radio(
+                    "Your Action:",
+                    options=["Pending Review", "Tool is Correct - Correction Made", "Tool is Incorrect - Ignore Finding"],
+                    key=decision_key,
+                    index=["Pending Review", "Tool is Correct - Correction Made", "Tool is Incorrect - Ignore Finding"].index(product_state["states"][i]["decision"]),
+                    label_visibility="collapsed"
+                )
+            with cols[1]:
+                product_state["states"][i]["notes"] = st.text_input(
+                    "Notes (optional):",
+                    key=notes_key,
+                    value=product_state["states"][i]["notes"],
+                    placeholder="e.g., 'Updated artwork and sent to printer.'"
+                )
+
+    # Display the final recommendation from the AI
     recommendation = review_text.split("**Recommendation:**")[-1]
     st.markdown(f"**Recommendation:** {recommendation}")
 
-    # Check if all have been reviewed
-    if product_state["checked"] == product_state["total"]:
+    # Check if all findings have been reviewed
+    reviewed_count = sum(1 for state in product_state["states"].values() if state["decision"] != "Pending Review")
+    if reviewed_count == product_state["total"]:
         st.success("✅ Well done! All findings for this product have been reviewed.")
-
-def update_checked_count(product_name):
-    """Callback to update the count of checked boxes."""
-    product_state = st.session_state[f"findings_{product_name}"]
-    product_state["checked"] = sum(1 for i, checked in product_state["states"].items() if checked)
 
 
 def main():
@@ -471,7 +501,7 @@ def main():
     if st.session_state.results:
         st.markdown("--- \n ## 📊 Validation Report")
         
-        report_df = pd.DataFrame(prepare_report_data_for_export(st.session_state.results, st.session_state.run_custom_instructions))
+        report_df = pd.DataFrame(prepare_report_data_for_export(st.session_state.results))
         csv = report_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Export Full Report to CSV",
@@ -488,7 +518,6 @@ def main():
 
 
         for product_name, data in st.session_state.results.items():
-            # ... (UI rendering logic for expander and automated checks) ...
             with st.expander(f"Product: {product_name}", expanded=True):
                 if data.get('ai_review') and data['ai_review'] != 'Pending...':
                     st.markdown("#### 🤖 AI-Powered Review")
