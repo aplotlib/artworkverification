@@ -1,7 +1,7 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v3.2 FINAL - Corrects branding validation logic by shifting responsibility from brittle
-automated checks to the more robust AI reviewer.
+v3.3 FINAL - Implements a "Custom Instructions" text area for session-specific
+AI guidance, allowing users to easily adapt the review for unique cases.
 
 This application analyzes a complete set of product packaging documents,
 groups them by product, extracts text from PDF, DOCX, and XLSX formats,
@@ -179,10 +179,6 @@ class DynamicValidator:
         if 'made in china' not in text_lower and 'made in taiwan' not in text_lower:
             results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
             
-        # --- MODIFICATION ---
-        # The unreliable check for "vive" branding has been removed.
-        # This responsibility is now delegated to the more capable AI reviewer.
-            
         sku = doc_info.get('sku', 'N/A')
         for suffix, color in DynamicValidator.SKU_SUFFIX_MAP.items():
             if sku.upper().endswith(suffix) and color not in text_lower:
@@ -213,7 +209,7 @@ class AIReviewer:
         return None, None
 
     @staticmethod
-    def get_batch_review(all_products_data, api_type, api_key):
+    def get_batch_review(all_products_data, custom_instructions, api_type, api_key):
         """Performs a single, batched AI review for all product groups."""
         if not api_key: return {"error": "AI review disabled (No API Key)."}
         if not all_products_data: return {"error": "No data to review."}
@@ -228,22 +224,27 @@ class AIReviewer:
                     full_text_context += f"\n--- END OF FILE ---\n"
 
         # --- MODIFICATION START ---
-        # The AI prompt is updated to make brand verification a primary task.
+        # The AI prompt is updated to include and prioritize custom instructions.
         prompt = f"""
         You are a meticulous Quality Control specialist for Vive Health. Your primary goal is to find and provide evidence for critical inconsistencies, typos, or grammatical errors.
-        For each product group below, perform the following steps and format your response in structured Markdown:
+        
+        **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
+        ---
+        {custom_instructions if custom_instructions else "No custom instructions provided."}
+        ---
+        You MUST follow these custom instructions above all other rules.
 
-        1.  **Start with the Product Title:** Use a level-3 Markdown header for each product (e.g., `### Product: Wheelchair Bag`).
-        2.  **Brand Verification (Critical First Step):** Confirm that the "Vive" brand name or logo is present somewhere in the document set for this product. If it is missing entirely, report this as the first and most critical error.
+        For each product group below, perform the following steps and format your response in structured Markdown:
+        1.  **Start with the Product Title:** Use a level-3 Markdown header (e.g., `### Product: Wheelchair Bag`).
+        2.  **Brand Verification:** Confirm the "Vive" brand name or logo is present. If missing, report this as a critical error.
         3.  **Analyze and Report Other Errors:**
-            - If you find any other error (e.g., inconsistency, typo), you MUST follow the "Claim, Evidence, Reasoning" format.
+            - If you find an error, you MUST follow the "Claim, Evidence, Reasoning" format.
             - **Claim:** A 1-line summary of the error (e.g., "Product Name Mismatch").
-            - **Evidence:** Quote the exact text from each file causing the conflict, and explicitly name the source file in parentheses. (e.g., "- "Wheelchair Bag" (from `wheelchair_bag_tag_purple_250625.pdf`) vs. "Wheelchair Bag Advanced" (from `wheelchair_bag_purple_flower_shipping_mark.pdf`)").
+            - **Evidence:** Quote the exact text from each conflicting file, and name the source file in parentheses.
             - **Reasoning:** A 1-line explanation of why it's a problem.
-            - List all errors you find for the product this way.
-        4.  **Recommendation:** After listing all findings, state if the package is "Approved for Production" or "Needs Correction" and why.
+        4.  **Recommendation:** State if the package is "Approved" or "Needs Correction" and why.
         5.  **No Errors:** If a product group is perfect, simply write: "**Recommendation:** Approved for Production. All documents are consistent and no errors were found."
-        6.  **Repeat** this entire process for every product group in the batch.
+        6.  **Repeat** for every product group in the batch.
         """
         # --- MODIFICATION END ---
         try:
@@ -252,8 +253,8 @@ class AIReviewer:
                 response = client.messages.create(
                     model="claude-3-5-sonnet-20240620",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=4096, # Increased tokens for more verbose, evidence-based responses
-                    temperature=0.05 # Lower temperature for more factual, less creative output
+                    max_tokens=4096,
+                    temperature=0.05
                 )
                 response_text = response.content[0].text
                 ai_reviews = {}
@@ -318,12 +319,24 @@ def main():
             st.success(f"AI Review Enabled ({api_type.capitalize()})")
         else:
             st.warning("AI Review Disabled")
-            st.markdown("To enable AI analysis, please add your `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to your Streamlit secrets.")
+            st.markdown("To enable AI analysis, please add your API Key to your Streamlit secrets.")
 
         # Check if Tesseract is installed and available
         if not shutil.which("tesseract"):
             st.error("Tesseract OCR is not installed or not in the system's PATH. PDF processing will fail.")
-            st.info("For deployment on Streamlit Cloud, ensure your `packages.txt` file contains `tesseract-ocr`.")
+            st.info("For deployment on Streamlit Cloud, ensure `packages.txt` contains `tesseract-ocr`.")
+        
+        st.markdown("---")
+        
+        # --- MODIFICATION START ---
+        # Added text area for custom instructions
+        st.markdown("### 📝 Custom Instructions for this Session")
+        custom_instructions = st.text_area(
+            "Add any special rules or context for this review. For example: 'For this batch, all products are made in Taiwan.'",
+            height=150,
+            key="custom_instructions"
+        )
+        # --- MODIFICATION END ---
         
         st.markdown("---")
         uploaded_files = st.file_uploader(
@@ -362,7 +375,8 @@ def main():
                 # Step 2: Perform one batched AI call
                 progress_bar.progress(1.0, "Submitting to AI for final, evidence-based review...")
                 if api_key:
-                    batched_ai_reviews = AIReviewer.get_batch_review(st.session_state.results, api_type, api_key)
+                    # Pass the custom instructions to the AI reviewer
+                    batched_ai_reviews = AIReviewer.get_batch_review(st.session_state.results, st.session_state.custom_instructions, api_type, api_key)
                     if "error" in batched_ai_reviews:
                         st.error(f"AI review failed: {batched_ai_reviews['error']}")
                     else:
