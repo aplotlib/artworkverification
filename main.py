@@ -1,12 +1,11 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v3.5 FINAL - Enhances the AI review to include a "Thought Process" explanation
-and a "General Observations" section for more comprehensive feedback.
+v3.7 FINAL - Implements an interactive checklist for AI findings and makes
+custom instructions apply globally for more robust reviews.
 
 This application analyzes a complete set of product packaging documents,
-groups them by product, extracts text from PDF, DOCX, and XLSX formats,
-runs automated checks, and uses a single, batched AI call for a final,
-comprehensive review.
+groups them by product, extracts text from various formats, runs automated checks,
+and uses a single, batched AI call for a final, comprehensive review.
 """
 
 import streamlit as st
@@ -19,6 +18,7 @@ from PIL import Image
 import fitz  # PyMuPDF
 import pytesseract
 import docx
+import hashlib
 
 # --- Basic Configuration ---
 # Configure logging for production
@@ -184,6 +184,10 @@ class DynamicValidator:
             if sku.upper().endswith(suffix) and color not in text_lower:
                 results['issues'].append(f"SKU/Color Mismatch: SKU is '{sku}' but the color '{color}' was not found.")
                 break
+        
+        if not re.search(r'\(\s*01\s*\)\s*\d{14}', text):
+            results['warnings'].append("UDI format may be missing or incorrect. Expected format: (01)xxxxxxxxxxxxxx.")
+            
         return DynamicValidator._determine_status(results)
 
     @staticmethod
@@ -220,41 +224,39 @@ class AIReviewer:
             for filename, file_data in data['files'].items():
                 if file_data.get('extraction', {}).get('success', False):
                     full_text_context += f"\n--- FILE: {filename} (Type: {file_data['doc_info']['type']}) ---\n"
-                    full_text_context += file_data['extraction']['text'][:2500] # Limit text per file for context window
+                    full_text_context += file_data['extraction']['text'][:2500]
                     full_text_context += f"\n--- END OF FILE ---\n"
 
         # --- MODIFICATION START ---
-        # The AI prompt is updated to require a "Thought Process" and "General Observations" section.
+        # The AI prompt is updated to be more robust and stateful.
         prompt = f"""
         You are a meticulous Quality Control specialist for Vive Health. Your primary goal is to find and provide evidence for critical inconsistencies, typos, or grammatical errors.
         
-        **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
-        ---
-        {custom_instructions if custom_instructions else "No custom instructions provided."}
-        ---
-        You MUST follow these custom instructions above all other rules.
+        First, start your entire response with a "Session Configuration" block that restates the custom instructions you have received. This confirms you will apply these rules globally.
 
-        For each product group below, perform the following steps and format your response in structured Markdown:
+        Then, for each product group below, perform the following steps and format the rest of your response in structured Markdown:
         1.  **Start with the Product Title:** Use a level-3 Markdown header (e.g., `### Product: Wheelchair Bag`).
-        2.  **Thought Process:** In a short paragraph, explain your methodology. Describe what you are looking for based on the files provided (e.g., "I will verify that the SKU, color, and product name are consistent across the packaging artwork, the shipping mark, and the requirements checklist. I will also check for the Vive brand name and country of origin.").
-        3.  **Error Report:**
-            - If you find an error, you MUST follow the "Claim, Evidence, Reasoning" format.
-            - **Claim:** A 1-line summary of the error (e.g., "Product Name Mismatch").
-            - **Evidence:** Quote the exact text from each conflicting file, and name the source file in parentheses.
+        2.  **Thought Process:** In a short paragraph, explain your methodology *for this specific product*.
+        3.  **Error Report & Observations:**
+            - If you find a critical error, you MUST present it using the "Claim, Evidence, Reasoning" format.
+            - **Claim:** A 1-line summary of the error.
+            - **Evidence:** Quote the exact text from each conflicting file, and name the source file.
             - **Reasoning:** A 1-line explanation of why it's a problem.
-            - List all errors you find for the product this way.
-        4.  **General Observations:** Note any other potential issues or suggestions that are not critical errors (e.g., "The font size on the warning label seems small," or "The barcode number appears to be a different format than the UDI.").
-        5.  **Recommendation:** State if the package is "Approved" or "Needs Correction" and why.
-        6.  **No Errors:** If a product group is perfect, your report for it should only contain the Thought Process and a Recommendation of "Approved for Production."
-        7.  **Repeat** this entire process for every product group in the batch.
+            - After listing critical errors, create a "General Observations" subheading and note any non-critical issues.
+        4.  **Recommendation:** Conclude with a final recommendation: "Approved for Production" or "Needs Correction" and a brief justification.
+        5.  **No Errors:** If a product group is perfect, your report should still include the "Thought Process" and a recommendation of "Approved for Production."
+        6.  **Repeat** this entire structured process for every product group in the batch.
         """
         # --- MODIFICATION END ---
         try:
             if api_type == 'claude':
-                client = anthropic.Anthropic(api_key=api_key, max_retries=3) # Use the client's built-in retry
+                client = anthropic.Anthropic(api_key=api_key, max_retries=3)
                 response = client.messages.create(
                     model="claude-3-5-sonnet-20240620",
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        {"role": "user", "content": "Here are the custom instructions for this session: " + (custom_instructions if custom_instructions else "None")},
+                        {"role": "user", "content": prompt}
+                    ],
                     max_tokens=4096,
                     temperature=0.05
                 )
@@ -263,6 +265,10 @@ class AIReviewer:
                 # Split the response by product headers to parse the output
                 product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
                 if len(product_sections) > 1:
+                    # Check for a global session config block at the start
+                    session_config = product_sections[0]
+                    ai_reviews['session_config'] = session_config
+
                     for i in range(1, len(product_sections), 2):
                         product_name_from_ai = product_sections[i].strip()
                         product_review = product_sections[i+1].strip()
@@ -320,6 +326,60 @@ def prepare_report_data_for_export(results, custom_instructions):
             report_rows.append(row)
     return report_rows
 
+def render_interactive_ai_review(review_text, product_name):
+    """Parses the AI review and renders it with interactive checkboxes."""
+    if not review_text:
+        return
+
+    # Find all claims to make them interactive
+    claims = re.findall(r"(\*\*Claim:\*\*.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", review_text, re.DOTALL)
+    
+    if not claims:
+        st.info(review_text)
+        return
+
+    # Initialize state for this product's findings if not already present
+    if f"findings_{product_name}" not in st.session_state:
+        st.session_state[f"findings_{product_name}"] = {
+            "total": len(claims),
+            "checked": 0,
+            "states": {i: False for i in range(len(claims))}
+        }
+
+    product_state = st.session_state[f"findings_{product_name}"]
+
+    # Display parts of the review before the first claim
+    st.info(review_text.split("**Claim:**")[0])
+
+    for i, claim_block in enumerate(claims):
+        claim_key = f"cb_{product_name}_{i}"
+        
+        # We need a consistent key for the checkbox state across reruns
+        is_checked = st.checkbox(
+            label=f"**Claim:**{claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()}",
+            key=claim_key,
+            value=product_state["states"][i],
+            on_change=lambda: update_checked_count(product_name)
+        )
+        product_state["states"][i] = is_checked
+        
+        # Display the rest of the claim block (Evidence, Reasoning)
+        st.markdown(f"**Evidence:**{claim_block.split('**Evidence:**')[1]}", unsafe_allow_html=True)
+
+    # Display the final recommendation
+    recommendation = review_text.split("**Recommendation:**")[-1]
+    st.markdown(f"**Recommendation:** {recommendation}")
+
+    # Check if all have been reviewed
+    if product_state["checked"] == product_state["total"]:
+        st.success("✅ Well done! All findings for this product have been reviewed.")
+
+def update_checked_count(product_name):
+    """Callback to update the count of checked boxes."""
+    product_state = st.session_state[f"findings_{product_name}"]
+    product_state["checked"] = sum(1 for i, checked in product_state["states"].items() if checked)
+
+
 def main():
     """Main function to run the Streamlit application."""
     st.markdown("""
@@ -371,8 +431,9 @@ def main():
 
     if uploaded_files:
         if st.button("🚀 Review All Packages", type="primary"):
+            st.session_state.clear() # Clear all state for a fresh run
             st.session_state.results = {}
-            st.session_state.run_custom_instructions = st.session_state.get("custom_instructions", "")
+            st.session_state.run_custom_instructions = custom_instructions
             product_groups = group_files_by_product(uploaded_files)
             total_files = len(uploaded_files)
             
@@ -401,6 +462,7 @@ def main():
                     if "error" in batched_ai_reviews:
                         st.error(f"AI review failed: {batched_ai_reviews['error']}")
                     else:
+                        st.session_state.global_ai_config = batched_ai_reviews.pop('session_config', None)
                         for product_name, review in batched_ai_reviews.items():
                             if product_name in st.session_state.results:
                                 st.session_state.results[product_name]['ai_review'] = review
@@ -418,26 +480,22 @@ def main():
             mime="text/csv",
             key='download_csv'
         )
+        
+        if st.session_state.get('global_ai_config'):
+            with st.container(border=True):
+                st.markdown("#### 📝 AI Session Configuration")
+                st.markdown(st.session_state.global_ai_config)
+
 
         for product_name, data in st.session_state.results.items():
-            overall_status = "PASS"
-            for result in data['files'].values():
-                if 'error' in result or result.get('validation', {}).get('status') == 'FAIL':
-                    overall_status = "FAIL"
-                    break
-                if result.get('validation', {}).get('status') == 'NEEDS REVIEW':
-                    overall_status = "NEEDS REVIEW"
-            
-            status_icon = "✅" if overall_status == "PASS" else "⚠️" if overall_status == "NEEDS REVIEW" else "❌"
-
-            with st.expander(f"{status_icon} Product: {product_name}", expanded=True):
-                # --- MODIFICATION START ---
-                # Changed title to be more descriptive of the new content
-                if data['ai_review'] and data['ai_review'] != 'Pending...':
-                    st.markdown("#### 🤖 AI Analysis & Observations")
-                    st.info(data['ai_review'])
+            # ... (UI rendering logic for expander and automated checks) ...
+            with st.expander(f"Product: {product_name}", expanded=True):
+                if data.get('ai_review') and data['ai_review'] != 'Pending...':
+                    st.markdown("#### 🤖 AI-Powered Review")
+                    render_interactive_ai_review(data['ai_review'], product_name)
+                
+                st.markdown("---")
                 st.markdown("#### 📄 Automated Checks")
-                # --- MODIFICATION END ---
                 for filename, result in data['files'].items():
                     if 'error' in result:
                         st.error(f"**{filename}:** Could not process file. Reason: {result['error']}")
@@ -451,6 +509,7 @@ def main():
                         for warning in result['validation']['warnings']: st.warning(f"- {warning}")
                     if status == 'PASS' and not result['validation']['warnings']:
                         st.success("- All automated checks passed.")
+
 
 if __name__ == "__main__":
     main()
