@@ -5,5 +5,5 @@ Pillow
 pandas
 openai
 anthropic
+google-generativeai
 python-docx
-openpyxl
