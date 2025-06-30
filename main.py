@@ -1,6 +1,6 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v4.0 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
+v4.1 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
 sign-off checklist, a fully working and auditable CSV export, and clearer
 workflow guidance.
 """
