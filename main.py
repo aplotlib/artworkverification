@@ -1,6 +1,7 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v3.1 FINAL - Implements evidence-based AI review for higher accuracy and verifiable findings.
+v3.2 FINAL - Corrects branding validation logic by shifting responsibility from brittle
+automated checks to the more robust AI reviewer.
 
 This application analyzes a complete set of product packaging documents,
 groups them by product, extracts text from PDF, DOCX, and XLSX formats,
@@ -177,12 +178,10 @@ class DynamicValidator:
         text_lower = text.lower()
         if 'made in china' not in text_lower and 'made in taiwan' not in text_lower:
             results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
-        
-        # --- MODIFICATION START ---
-        # More robust check for "vive" branding to account for OCR errors on stylized logos.
-        if 'vive' not in text_lower:
-            results['issues'].append('Missing Vive branding.')
-        # --- MODIFICATION END ---
+            
+        # --- MODIFICATION ---
+        # The unreliable check for "vive" branding has been removed.
+        # This responsibility is now delegated to the more capable AI reviewer.
             
         sku = doc_info.get('sku', 'N/A')
         for suffix, color in DynamicValidator.SKU_SUFFIX_MAP.items():
@@ -228,21 +227,25 @@ class AIReviewer:
                     full_text_context += file_data['extraction']['text'][:2500] # Limit text per file for context window
                     full_text_context += f"\n--- END OF FILE ---\n"
 
+        # --- MODIFICATION START ---
+        # The AI prompt is updated to make brand verification a primary task.
         prompt = f"""
         You are a meticulous Quality Control specialist for Vive Health. Your primary goal is to find and provide evidence for critical inconsistencies, typos, or grammatical errors.
         For each product group below, perform the following steps and format your response in structured Markdown:
 
         1.  **Start with the Product Title:** Use a level-3 Markdown header for each product (e.g., `### Product: Wheelchair Bag`).
-        2.  **Analyze and Report:**
-            - If you find an error, you MUST follow the "Claim, Evidence, Reasoning" format.
+        2.  **Brand Verification (Critical First Step):** Confirm that the "Vive" brand name or logo is present somewhere in the document set for this product. If it is missing entirely, report this as the first and most critical error.
+        3.  **Analyze and Report Other Errors:**
+            - If you find any other error (e.g., inconsistency, typo), you MUST follow the "Claim, Evidence, Reasoning" format.
             - **Claim:** A 1-line summary of the error (e.g., "Product Name Mismatch").
-            - **Evidence:** Quote the exact text from each file causing the conflict, and explicitly name the source file in parentheses. (e.g., "- "Wheelchair Bag" (from wheelchair_bag_tag_purple_250625.pdf) vs. "Wheelchair Bag Advanced" (from wheelchair_bag_purple_flower_shipping_mark.pdf)").
+            - **Evidence:** Quote the exact text from each file causing the conflict, and explicitly name the source file in parentheses. (e.g., "- "Wheelchair Bag" (from `wheelchair_bag_tag_purple_250625.pdf`) vs. "Wheelchair Bag Advanced" (from `wheelchair_bag_purple_flower_shipping_mark.pdf`)").
             - **Reasoning:** A 1-line explanation of why it's a problem.
             - List all errors you find for the product this way.
-        3.  **Recommendation:** After listing all errors, state if the package is "Approved for Production" or "Needs Correction" and why.
-        4.  **No Errors:** If a product group is perfect, simply write: "**Recommendation:** Approved for Production. All documents are consistent and no errors were found."
-        5.  **Repeat** this entire process for every product group in the batch.
+        4.  **Recommendation:** After listing all findings, state if the package is "Approved for Production" or "Needs Correction" and why.
+        5.  **No Errors:** If a product group is perfect, simply write: "**Recommendation:** Approved for Production. All documents are consistent and no errors were found."
+        6.  **Repeat** this entire process for every product group in the batch.
         """
+        # --- MODIFICATION END ---
         try:
             if api_type == 'claude':
                 client = anthropic.Anthropic(api_key=api_key, max_retries=3) # Use the client's built-in retry
