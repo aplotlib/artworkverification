@@ -1,7 +1,7 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v3.3 FINAL - Implements a "Custom Instructions" text area for session-specific
-AI guidance, allowing users to easily adapt the review for unique cases.
+v3.4 FINAL - Adds a comprehensive CSV export feature that includes the
+custom instructions used for the review session.
 
 This application analyzes a complete set of product packaging documents,
 groups them by product, extracts text from PDF, DOCX, and XLSX formats,
@@ -223,8 +223,6 @@ class AIReviewer:
                     full_text_context += file_data['extraction']['text'][:2500] # Limit text per file for context window
                     full_text_context += f"\n--- END OF FILE ---\n"
 
-        # --- MODIFICATION START ---
-        # The AI prompt is updated to include and prioritize custom instructions.
         prompt = f"""
         You are a meticulous Quality Control specialist for Vive Health. Your primary goal is to find and provide evidence for critical inconsistencies, typos, or grammatical errors.
         
@@ -246,7 +244,6 @@ class AIReviewer:
         5.  **No Errors:** If a product group is perfect, simply write: "**Recommendation:** Approved for Production. All documents are consistent and no errors were found."
         6.  **Repeat** for every product group in the batch.
         """
-        # --- MODIFICATION END ---
         try:
             if api_type == 'claude':
                 client = anthropic.Anthropic(api_key=api_key, max_retries=3) # Use the client's built-in retry
@@ -294,6 +291,43 @@ def group_files_by_product(uploaded_files):
         groups[base_name].append(file)
     return groups
 
+# --- MODIFICATION START ---
+# New function to prepare a detailed DataFrame for export.
+def prepare_report_data_for_export(results, custom_instructions):
+    """Converts the nested results dictionary to a flat list for DataFrame creation, including custom instructions."""
+    report_rows = []
+    for product_name, data in results.items():
+        ai_review = data.get('ai_review', 'N/A')
+        for filename, result in data['files'].items():
+            if 'error' in result:
+                row = {
+                    'Product': product_name,
+                    'File Name': filename,
+                    'Status': 'PROCESSING ERROR',
+                    'Details': result['error'],
+                    'Document Type': 'N/A',
+                    'SKU': 'N/A',
+                    'AI Review Summary': ai_review,
+                    'Custom Instructions for Run': custom_instructions
+                }
+            else:
+                issues = "; ".join(result['validation']['issues'])
+                warnings = "; ".join(result['validation']['warnings'])
+                details = f"Issues: {issues}. Warnings: {warnings}." if issues or warnings else "All automated checks passed."
+                row = {
+                    'Product': product_name,
+                    'File Name': filename,
+                    'Status': result['validation']['status'],
+                    'Details': details,
+                    'Document Type': result['doc_info']['type'],
+                    'SKU': result['doc_info']['sku'],
+                    'AI Review Summary': ai_review,
+                    'Custom Instructions for Run': custom_instructions
+                }
+            report_rows.append(row)
+    return report_rows
+# --- MODIFICATION END ---
+
 
 def main():
     """Main function to run the Streamlit application."""
@@ -311,6 +345,9 @@ def main():
 
     if 'results' not in st.session_state:
         st.session_state.results = {}
+    if 'run_custom_instructions' not in st.session_state:
+        st.session_state.run_custom_instructions = ""
+
 
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
@@ -321,22 +358,18 @@ def main():
             st.warning("AI Review Disabled")
             st.markdown("To enable AI analysis, please add your API Key to your Streamlit secrets.")
 
-        # Check if Tesseract is installed and available
         if not shutil.which("tesseract"):
             st.error("Tesseract OCR is not installed or not in the system's PATH. PDF processing will fail.")
             st.info("For deployment on Streamlit Cloud, ensure `packages.txt` contains `tesseract-ocr`.")
         
         st.markdown("---")
         
-        # --- MODIFICATION START ---
-        # Added text area for custom instructions
         st.markdown("### 📝 Custom Instructions for this Session")
         custom_instructions = st.text_area(
             "Add any special rules or context for this review. For example: 'For this batch, all products are made in Taiwan.'",
             height=150,
             key="custom_instructions"
         )
-        # --- MODIFICATION END ---
         
         st.markdown("---")
         uploaded_files = st.file_uploader(
@@ -349,6 +382,7 @@ def main():
     if uploaded_files:
         if st.button("🚀 Review All Packages", type="primary"):
             st.session_state.results = {}
+            st.session_state.run_custom_instructions = st.session_state.get("custom_instructions", "")
             product_groups = group_files_by_product(uploaded_files)
             total_files = len(uploaded_files)
             
@@ -375,8 +409,7 @@ def main():
                 # Step 2: Perform one batched AI call
                 progress_bar.progress(1.0, "Submitting to AI for final, evidence-based review...")
                 if api_key:
-                    # Pass the custom instructions to the AI reviewer
-                    batched_ai_reviews = AIReviewer.get_batch_review(st.session_state.results, st.session_state.custom_instructions, api_type, api_key)
+                    batched_ai_reviews = AIReviewer.get_batch_review(st.session_state.results, st.session_state.run_custom_instructions, api_type, api_key)
                     if "error" in batched_ai_reviews:
                         st.error(f"AI review failed: {batched_ai_reviews['error']}")
                     else:
@@ -387,6 +420,20 @@ def main():
 
     if st.session_state.results:
         st.markdown("--- \n ## 📊 Validation Report")
+        
+        # --- MODIFICATION START ---
+        # Add the download button here, using the new report generation function
+        report_df = pd.DataFrame(prepare_report_data_for_export(st.session_state.results, st.session_state.run_custom_instructions))
+        csv = report_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Export Full Report to CSV",
+            data=csv,
+            file_name="vive_health_validation_report.csv",
+            mime="text/csv",
+            key='download_csv'
+        )
+        # --- MODIFICATION END ---
+
         for product_name, data in st.session_state.results.items():
             overall_status = "PASS"
             for result in data['files'].values():
