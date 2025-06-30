@@ -1,8 +1,8 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v4.0 FINAL - The Definitive Edition. Implements true multimodal (text + image) analysis,
-a "Design Manager" AI persona, a fully working interactive sign-off checklist, and a
-complete, auditable CSV export.
+v4.0 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
+sign-off checklist, a fully working and auditable CSV export, and clearer
+workflow guidance.
 """
 
 import streamlit as st
@@ -78,24 +78,18 @@ class DocumentProcessor:
         pdf_document = fitz.open(stream=file_buffer.read(), filetype="pdf")
         for page_num in range(len(pdf_document)):
             page = pdf_document.load_page(page_num)
-            
-            # Extract text via OCR
-            pix = page.get_pixmap(dpi=200) # Balanced DPI for speed and quality
+            pix = page.get_pixmap(dpi=200)
             img_bytes = pix.tobytes("png")
             image = Image.open(BytesIO(img_bytes))
             page_text = pytesseract.image_to_string(image, lang='eng')
             text += f"\n\n--- Page {page_num + 1} ---\n{page_text}"
-            
-            # Extract the full page as an image for visual analysis
             images.append(image)
-
         pdf_document.close()
         logger.info(f"Successfully extracted text and images from PDF {filename}.")
         return {'success': True, 'text': text, 'images': images, 'method': 'PDF-OCR+Image', 'errors': []}
 
     @staticmethod
     def _extract_text_from_word(file_buffer, filename):
-        """Extracts text from a .docx file."""
         text = ""
         doc = docx.Document(file_buffer)
         for para in doc.paragraphs:
@@ -104,7 +98,6 @@ class DocumentProcessor:
 
     @staticmethod
     def _extract_text_from_excel(file_buffer, filename):
-        """Extracts text from all sheets of an .xlsx or .csv file."""
         text = ""
         xls = pd.ExcelFile(file_buffer)
         for sheet_name in xls.sheet_names:
@@ -155,7 +148,6 @@ class DynamicValidator:
 
     @staticmethod
     def validate(text, doc_info):
-        """Routes to the correct validation function based on document type."""
         doc_type = doc_info.get('type', 'Unknown')
         validator_func = getattr(DynamicValidator, f"_validate_{doc_type.lower().replace(' ', '_')}", DynamicValidator._validate_default)
         return validator_func(text, doc_info)
@@ -205,72 +197,68 @@ class AIReviewer:
 
     @staticmethod
     def get_available_models():
-        """Checks for available API keys and returns a list of models."""
         models = []
         if hasattr(st, 'secrets'):
-            if 'ANTHROPIC_API_KEY' in st.secrets and st.secrets['ANTHROPIC_API_KEY']:
+            if st.secrets.get("ANTHROPIC_API_KEY"):
                 models.append("Anthropic Claude 3.5 Sonnet")
-            if 'OPENAI_API_KEY' in st.secrets and st.secrets['OPENAI_API_KEY']:
+            if st.secrets.get("OPENAI_API_KEY"):
                 models.append("OpenAI GPT-4o")
-            if 'GOOGLE_API_KEY' in st.secrets and st.secrets['GOOGLE_API_KEY']:
+            if st.secrets.get("GOOGLE_API_KEY"):
                 models.append("Google Gemini 1.5 Pro (Visual Analysis)")
         return models
 
     @staticmethod
     def get_batch_review(all_products_data, custom_instructions, model_choice, api_keys):
-        """Performs a single, batched AI review for all product groups using the selected model."""
         if not model_choice: return {"error": "No AI model selected or configured."}
-
+        
         # --- MODIFICATION START ---
-        # The AI prompt is upgraded to the "Design Manager" persona.
+        # The AI prompt is upgraded to be more nuanced and act as a Design Manager.
         prompt = f"""
-        You are a senior Graphic Design Manager at Vive Health, with a meticulous eye for detail and a deep understanding of brand consistency, marketing, and regulatory compliance. Your task is to provide an expert-level review of the following product packaging documents.
+        You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
 
         **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
         ---
-        {custom_instructions if custom_instructions else "No custom instructions provided."}
+        {custom_instructions if custom_instructions else "No custom instructions provided. Standard review procedures apply."}
         ---
-        You MUST treat these custom instructions as a direct order from the project lead and apply them globally.
+        You MUST treat these custom instructions as a direct order from the project lead and apply them globally to all product groups in this batch.
 
         Begin your entire response with a single "Session Configuration" block that restates these custom instructions to confirm you have understood them.
 
         Then, for each product group below, provide a structured review:
         1.  **Product Title:** `### Product: [Product Name]`
-        2.  **Manager's Overview:** Start with a short, high-level paragraph. What is your overall impression of this package? Does it look professional and ready for market?
-        3.  **Detailed Analysis:**
-            - **Text & Compliance:** Review for typos, grammatical errors, and consistency (SKU, color, name) across all documents. Verify Vive branding and country of origin are present.
-            - **Visual Layout & Hierarchy:** Comment on the design. Is the logo prominent? Is the most important information easy to find? Is the layout clean and uncluttered?
-            - **Imagery:** Briefly assess the quality and appropriateness of product photos or illustrations.
-        4.  **Actionable Findings:** If you find any issues, present them using the "Claim, Evidence, Reasoning" format.
-            - **Claim:** A 1-line summary of the issue.
+        2.  **Manager's Overview:** A high-level paragraph on your overall impression.
+        3.  **Actionable Findings:**
+            - For each issue, you MUST classify it as either a "Critical Error" or a "Potential Inconsistency".
+            - A **Critical Error** is a definite mistake (e.g., typo, wrong SKU, direct contradiction).
+            - A **Potential Inconsistency** is a subtle issue that requires human review (e.g., slight color name variation, ambiguous wording).
+            - Present each finding using the "Claim, Evidence, Reasoning" format.
+            - **Claim:** Start with the classification (e.g., `Critical Error: SKU Mismatch`).
             - **Evidence:** Quote the exact text or describe the visual element, and name the source file.
-            - **Reasoning:** Explain why it's a problem from a design, branding, or compliance perspective.
-        5.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear, concise justification. If no issues are found, simply state "Approved for Production."
-        6.  **Repeat** this structured process for every product group.
+            - **Reasoning:** Explain why it's a problem.
+        4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
+        5.  **Repeat** this structured process for every product group.
         """
         # --- MODIFICATION END ---
         
         try:
-            # Build the content payload for the AI model
             model_input = [prompt]
             if "Gemini" in model_choice:
-                # For Gemini, flatten all images and text into a single list
                 for product_name, data in all_products_data.items():
                     model_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
                     for filename, file_data in data['files'].items():
                         model_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
-                        for img in file_data['extraction']['images']:
-                            model_input.append(img)
+                        for img in file_data['extraction']['images']: model_input.append(img)
             else:
-                # For text-only models, just append the text
+                text_content = ""
                 for product_name, data in all_products_data.items():
-                    model_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
+                    text_content += f"\n\n--- Start of Product Group: {product_name} ---\n"
                     for filename, file_data in data['files'].items():
-                         model_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}")
+                         text_content += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
+                model_input.append(text_content)
 
+            response_text = ""
             if "Claude" in model_choice and CLAUDE_AVAILABLE:
                 client = anthropic.Anthropic(api_key=api_keys['anthropic'], max_retries=3)
-                # Claude's API expects a list of dictionaries, not a flat list
                 messages = [{"role": "user", "content": " ".join(str(item) for item in model_input)}]
                 response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.1, messages=messages)
                 response_text = response.content[0].text
@@ -327,14 +315,10 @@ def prepare_report_data_for_export(results):
     """Converts the nested results dictionary to a flat, auditable list for DataFrame creation."""
     report_rows = []
     custom_instructions = st.session_state.get('run_custom_instructions', 'N/A')
-    
     for product_name, data in results.items():
         ai_review = data.get('ai_review', 'N/A')
         product_findings = st.session_state.get(f"findings_{product_name}", {})
-
-        # Find all claims in the AI review for this product
         claims = re.findall(r"\*\*Claim:\*\*(.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", ai_review, re.DOTALL)
-
         if claims:
             for i, claim_block in enumerate(claims):
                 claim_text = claim_block.split('**Evidence:**')[0].strip()
@@ -347,15 +331,12 @@ def prepare_report_data_for_export(results):
                 }
                 report_rows.append(row)
         else:
-            # Add a single row for products with no AI findings
             row = {
                 'Product': product_name, 'Finding Type': 'AI Review', 'Details': 'No discrepancies found by AI.',
                 'Evidence': 'N/A', 'User Decision': 'N/A', 'User Notes': 'N/A',
                 'Custom Instructions for Run': custom_instructions
             }
             report_rows.append(row)
-
-        # Add rows for automated checks
         for filename, result in data['files'].items():
             if result.get('validation', {}).get('issues'):
                 for issue in result['validation']['issues']:
@@ -382,8 +363,9 @@ def render_interactive_ai_review(review_text, product_name):
         return
     for i, claim_block in enumerate(claims):
         with st.container(border=True):
-            claim_text = f"**Claim:**{claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()}"
-            st.markdown(claim_text)
+            claim_text_full = claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()
+            claim_icon = "❌" if "Critical Error" in claim_text_full else "⚠️"
+            st.markdown(f"**Claim:** {claim_icon} {claim_text_full}")
             st.markdown(f"**Evidence:**{claim_block.split('**Evidence:**')[1].split('**Reasoning:**')[0].strip()}")
             st.markdown(f"**Reasoning:**{claim_block.split('**Reasoning:**')[1].strip()}")
             st.markdown("---")
@@ -406,6 +388,8 @@ def render_interactive_ai_review(review_text, product_name):
     reviewed_count = sum(1 for state in product_state["states"].values() if state["decision"] != "Pending Review")
     if reviewed_count == product_state["total"] and product_state["total"] > 0:
         st.success("✅ Well done! All findings for this product have been reviewed.")
+        return True
+    return False
 
 def main():
     """Main function to run the Streamlit application."""
@@ -490,19 +474,20 @@ def main():
 
     if st.session_state.results:
         st.markdown("--- \n ## 📊 Validation Report")
-        if st.button("📥 Generate & Download Audit Log", key='generate_report'):
-            report_df = pd.DataFrame(prepare_report_data_for_export(st.session_state.results))
-            csv = report_df.to_csv(index=False).encode('utf-8')
-            st.download_button(label="Click to Download CSV", data=csv, file_name="vive_health_audit_log.csv", mime="text/csv")
+        
         if st.session_state.get('global_ai_config'):
             with st.container(border=True):
                 st.markdown("#### 📝 AI Session Configuration")
                 st.markdown(st.session_state.global_ai_config)
+
+        all_findings_reviewed = True
         for product_name, data in st.session_state.results.items():
             with st.expander(f"Product: {product_name}", expanded=True):
                 if data.get('ai_review') and data['ai_review'] != 'Pending...':
                     st.markdown("#### 🤖 AI Design Manager Review")
-                    render_interactive_ai_review(data['ai_review'], product_name)
+                    is_complete = render_interactive_ai_review(data['ai_review'], product_name)
+                    if not is_complete:
+                        all_findings_reviewed = False
                 st.markdown("---")
                 st.markdown("#### 📄 Automated Checks")
                 for filename, result in data['files'].items():
@@ -518,6 +503,20 @@ def main():
                         for warning in result['validation']['warnings']: st.warning(f"- {warning}")
                     if status == 'PASS' and not result['validation']['warnings']:
                         st.success("- All automated checks passed.")
+        
+        st.markdown("---")
+        st.markdown("### 📥 Finalize & Export")
+        if all_findings_reviewed:
+            st.success("All AI findings have been reviewed. You can now generate the final audit log.")
+            report_df = pd.DataFrame(prepare_report_data_for_export(st.session_state.results))
+            csv = report_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Final Audit Log (CSV)", data=csv,
+                file_name="vive_health_audit_log.csv", mime="text/csv"
+            )
+        else:
+            st.warning("Please review and sign off on all AI findings above before exporting the final report.")
+
 
 if __name__ == "__main__":
     main()
