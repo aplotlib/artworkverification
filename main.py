@@ -57,10 +57,10 @@ class DocumentProcessor:
                 return DocumentProcessor._extract_from_pdf(file, filename)
             elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                 text = DocumentProcessor._extract_text_from_word(file, filename)
-                return {'success': True, 'text': text['text'], 'images': [], 'method': 'DOCX-Parser'}
+                return {'success': True, 'text': text['text'], 'images': [], 'method': 'DOCX-Parser', 'errors': []}
             elif file_type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"]:
                 text = DocumentProcessor._extract_text_from_excel(file, filename)
-                return {'success': True, 'text': text['text'], 'images': [], 'method': 'Spreadsheet-Parser'}
+                return {'success': True, 'text': text['text'], 'images': [], 'method': 'Spreadsheet-Parser', 'errors': []}
             else:
                 error_msg = f"Unsupported file type: {file_type}"
                 logger.warning(error_msg)
@@ -239,35 +239,38 @@ class AIReviewer:
         
         try:
             model_input = [prompt]
-            text_content_for_all = ""
-            for product_name, data in all_products_data.items():
-                text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
-                for filename, file_data in data['files'].items():
-                     text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
-            model_input.append(text_content_for_all)
+            # Bug fix: Ensure we handle cases where extraction fails and keys are missing
+            if "Gemini" in model_choice:
+                for product_name, data in all_products_data.items():
+                    model_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
+                    for filename, file_data in data.get('files', {}).items():
+                        if file_data.get('extraction', {}).get('success'):
+                            model_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
+                            for img in file_data['extraction']['images']: model_input.append(img)
+            else:
+                text_content_for_all = ""
+                for product_name, data in all_products_data.items():
+                    text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
+                    for filename, file_data in data.get('files', {}).items():
+                         if file_data.get('extraction', {}).get('success'):
+                            text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
+                model_input.append(text_content_for_all)
 
             response_text = ""
             if "Claude" in model_choice and CLAUDE_AVAILABLE:
                 client = anthropic.Anthropic(api_key=api_keys['anthropic'], max_retries=3)
-                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input)}]
+                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input if isinstance(item, str))}]
                 response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.1, messages=messages)
                 response_text = response.content[0].text
             elif "GPT" in model_choice and OPENAI_AVAILABLE:
                 client = openai.OpenAI(api_key=api_keys['openai'])
-                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input)}]
+                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input if isinstance(item, str))}]
                 response = client.chat.completions.create(model="gpt-4o", max_tokens=4096, temperature=0.1, messages=messages)
                 response_text = response.choices[0].message.content
             elif "Gemini" in model_choice and GEMINI_AVAILABLE:
                 genai.configure(api_key=api_keys['google'])
                 model = genai.GenerativeModel('gemini-1.5-pro-latest')
-                # Rebuild input for Gemini's multimodal format
-                gemini_input = [prompt]
-                for product_name, data in all_products_data.items():
-                    gemini_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
-                    for filename, file_data in data['files'].items():
-                        gemini_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
-                        for img in file_data['extraction']['images']: gemini_input.append(img)
-                response = model.generate_content(gemini_input)
+                response = model.generate_content(model_input)
                 response_text = response.text
             else:
                 return {"error": "Selected AI model is not available or configured correctly."}
