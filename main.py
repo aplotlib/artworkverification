@@ -1,8 +1,8 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v4.1 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
-sign-off checklist and follow-up chat, a fully working and auditable CSV export,
-and clearer workflow guidance.
+v4.2 FINAL - The Definitive Edition. Implements "Smart Presets" for custom
+instructions, a nuanced AI with an interactive sign-off checklist, a fully
+working and auditable CSV export, and clearer workflow guidance.
 """
 
 import streamlit as st
@@ -208,96 +208,90 @@ class AIReviewer:
         return models
 
     @staticmethod
-    def get_review(all_products_data, custom_instructions, model_choice, api_keys, chat_history=None):
-        """Performs an AI review, handling both initial requests and follow-ups."""
+    def get_batch_review(all_products_data, custom_instructions, model_choice, api_keys):
         if not model_choice: return {"error": "No AI model selected or configured."}
         
-        if not chat_history: # This is an initial review
-            prompt = f"""
-            You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
+        prompt = f"""
+        You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
 
-            **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
-            ---
-            {custom_instructions if custom_instructions else "No custom instructions provided. Standard review procedures apply."}
-            ---
-            You MUST treat these custom instructions as a direct order from the project lead and apply them globally to all product groups in this batch.
+        **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
+        ---
+        {custom_instructions if custom_instructions else "No custom instructions provided. Standard review procedures apply."}
+        ---
+        You MUST treat these custom instructions as a direct order from the project lead and apply them globally to all product groups in this batch.
 
-            Begin your entire response with a single "Session Configuration" block that restates these custom instructions to confirm you have understood them.
+        Begin your entire response with a single "Session Configuration" block that restates these custom instructions to confirm you have understood them.
 
-            Then, for each product group below, provide a structured review:
-            1.  **Product Title:** `### Product: [Product Name]`
-            2.  **Manager's Overview:** A high-level paragraph on your overall impression.
-            3.  **Actionable Findings:**
-                - For each issue, you MUST classify it as either a "Critical Error" or a "Potential Inconsistency".
-                - A **Critical Error** is a definite mistake (e.g., typo, wrong SKU, direct contradiction).
-                - A **Potential Inconsistency** is a subtle issue that requires human review (e.g., slight color name variation, ambiguous wording).
-                - Present each finding using the "Claim, Evidence, Reasoning" format.
-                - **Claim:** Start with the classification (e.g., `Critical Error: SKU Mismatch`).
-                - **Evidence:** Quote the exact text or describe the visual element, and name the source file.
-                - **Reasoning:** Explain why it's a problem.
-            4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
-            5.  **Repeat** this structured process for every product group.
-            """
-            
-            # Build the content payload for the AI model
-            model_input = [prompt]
-            text_content_for_all = ""
-            for product_name, data in all_products_data.items():
-                text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
-                for filename, file_data in data.get('files', {}).items():
-                     if file_data.get('extraction', {}).get('success'):
-                        text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
-            model_input.append(text_content_for_all)
-            
-            # The full context for the chat history
-            st.session_state.full_context_for_chat = " ".join(str(item) for item in model_input if isinstance(item, str))
-
-        else: # This is a follow-up question
-            model_input = chat_history
-
+        Then, for each product group below, provide a structured review:
+        1.  **Product Title:** `### Product: [Product Name]`
+        2.  **Manager's Overview:** A high-level paragraph on your overall impression.
+        3.  **Actionable Findings:**
+            - For each issue, you MUST classify it as either a "Critical Error" or a "Potential Inconsistency".
+            - A **Critical Error** is a definite mistake (e.g., typo, wrong SKU, direct contradiction).
+            - A **Potential Inconsistency** is a subtle issue that requires human review (e.g., slight color name variation, ambiguous wording).
+            - Present each finding using the "Claim, Evidence, Reasoning" format.
+            - **Claim:** Start with the classification (e.g., `Critical Error: SKU Mismatch`).
+            - **Evidence:** Quote the exact text or describe the visual element, and name the source file.
+            - **Reasoning:** Explain why it's a problem.
+        4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
+        5.  **Repeat** this structured process for every product group.
+        """
+        
         try:
+            model_input = [prompt]
+            if "Gemini" in model_choice:
+                for product_name, data in all_products_data.items():
+                    model_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
+                    for filename, file_data in data.get('files', {}).items():
+                        if file_data.get('extraction', {}).get('success'):
+                            model_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
+                            for img in file_data['extraction']['images']: model_input.append(img)
+            else:
+                text_content_for_all = ""
+                for product_name, data in all_products_data.items():
+                    text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
+                    for filename, file_data in data.get('files', {}).items():
+                         if file_data.get('extraction', {}).get('success'):
+                            text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
+                model_input.append(text_content_for_all)
+
             response_text = ""
             if "Claude" in model_choice and CLAUDE_AVAILABLE:
                 client = anthropic.Anthropic(api_key=api_keys['anthropic'], max_retries=3)
-                messages = chat_history if chat_history else [{"role": "user", "content": st.session_state.full_context_for_chat}]
-                response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.2, messages=messages)
+                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input if isinstance(item, str))}]
+                response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.1, messages=messages)
                 response_text = response.content[0].text
             elif "GPT" in model_choice and OPENAI_AVAILABLE:
                 client = openai.OpenAI(api_key=api_keys['openai'])
-                messages = chat_history if chat_history else [{"role": "user", "content": st.session_state.full_context_for_chat}]
-                response = client.chat.completions.create(model="gpt-4o", max_tokens=4096, temperature=0.2, messages=messages)
+                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input if isinstance(item, str))}]
+                response = client.chat.completions.create(model="gpt-4o", max_tokens=4096, temperature=0.1, messages=messages)
                 response_text = response.choices[0].message.content
-            # Note: Gemini's conversational turn-taking is different; this simplified approach may need adjustment for complex chats.
             elif "Gemini" in model_choice and GEMINI_AVAILABLE:
                 genai.configure(api_key=api_keys['google'])
                 model = genai.GenerativeModel('gemini-1.5-pro-latest')
-                chat = model.start_chat(history=[])
-                response = chat.send_message(st.session_state.full_context_for_chat if not chat_history else chat_history[-1]['parts'][0])
+                response = model.generate_content(model_input)
                 response_text = response.text
             else:
                 return {"error": "Selected AI model is not available or configured correctly."}
 
-            if not chat_history: # This was an initial review, so parse it
-                ai_reviews = {}
-                product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
-                if len(product_sections) > 1:
-                    session_config = product_sections[0]
-                    ai_reviews['session_config'] = session_config
-                    for i in range(1, len(product_sections), 2):
-                        product_name_from_ai = product_sections[i].strip()
-                        product_review = product_sections[i+1].strip()
-                        for original_product_name in all_products_data.keys():
-                            if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
-                                ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
-                                break
-                else:
-                    ai_reviews['batch_summary'] = response_text
-                return ai_reviews
-            else: # This was a follow-up, just return the text
-                return response_text
+            ai_reviews = {}
+            product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
+            if len(product_sections) > 1:
+                session_config = product_sections[0]
+                ai_reviews['session_config'] = session_config
+                for i in range(1, len(product_sections), 2):
+                    product_name_from_ai = product_sections[i].strip()
+                    product_review = product_sections[i+1].strip()
+                    for original_product_name in all_products_data.keys():
+                        if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
+                            ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
+                            break
+            else:
+                ai_reviews['batch_summary'] = response_text
+            return ai_reviews
 
         except Exception as e:
-            logger.error(f"AI review failed with model {model_choice}: {e}")
+            logger.error(f"AI batch review failed with model {model_choice}: {e}")
             return {"error": f"An error occurred during AI batch review: {e}"}
 
 # --- Helper Functions & UI ---
@@ -412,14 +406,25 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Initialize session state keys
     if 'results' not in st.session_state:
         st.session_state.results = {}
     if 'run_custom_instructions' not in st.session_state:
         st.session_state.run_custom_instructions = ""
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    
+
+    # --- MODIFICATION START ---
+    # Define presets and callback function at the top of main()
+    presets = {
+        "None": "",
+        "Standard Production (China)": "Default country of origin is China. Standard Vive branding must be present. All SKUs and product names must be consistent.",
+        "New Product (Taiwan)": "Country of origin for this batch is Taiwan. Pay extra attention to typos and grammatical errors. Ensure all regulatory symbols are present.",
+        "Minor Revision (SKU Update)": "The primary focus of this review is to confirm that only the SKU and barcode have been updated. All other elements should remain unchanged from the previous version."
+    }
+
+    def on_preset_change():
+        preset_name = st.session_state.get("preset_selector", "None")
+        st.session_state.custom_instructions = presets[preset_name]
+    # --- MODIFICATION END ---
+
     with st.sidebar:
         st.markdown("### ⚙️ AI Configuration")
         available_models = AIReviewer.get_available_models()
@@ -430,10 +435,29 @@ def main():
             model_choice = st.selectbox("Choose AI Model:", available_models, help="Gemini is recommended for visual analysis.")
         
         st.markdown("### 📝 Custom Instructions for this Session")
+        
+        # --- MODIFICATION START ---
+        # Add the preset selector and the instructions text area
+        st.selectbox(
+            "Load Instruction Preset (Optional):",
+            options=list(presets.keys()),
+            key="preset_selector",
+            on_change=on_preset_change
+        )
+        
         custom_instructions = st.text_area(
-            "Add special rules for this review. For example: 'For this batch, all products are made in Taiwan.'",
+            "Or, enter your own custom instructions below:",
             height=150, key="custom_instructions"
         )
+
+        with st.expander("How to Use Presets & Instructions"):
+            st.markdown("""
+            - **Presets:** Select a common scenario from the dropdown to automatically load a set of rules into the text box.
+            - **Custom:** You can edit the loaded preset or write your own instructions from scratch for unique projects.
+            - The AI will treat whatever is in the text box as its primary command for the review.
+            """)
+        # --- MODIFICATION END ---
+        
         st.markdown("---")
         uploaded_files = st.file_uploader(
             "Upload all files for one or more products:",
@@ -446,7 +470,6 @@ def main():
             st.session_state.clear()
             st.session_state.results = {}
             st.session_state.run_custom_instructions = custom_instructions
-            st.session_state.chat_history = []
             product_groups = group_files_by_product(uploaded_files)
             total_files = len(uploaded_files)
             
@@ -473,18 +496,14 @@ def main():
                     'openai': st.secrets.get("OPENAI_API_KEY"),
                     'google': st.secrets.get("GOOGLE_API_KEY")
                 }
-                initial_review = AIReviewer.get_review(st.session_state.results, st.session_state.run_custom_instructions, model_choice, api_keys)
-                
-                if "error" in initial_review:
-                    st.error(f"AI review failed: {initial_review['error']}")
+                batched_ai_reviews = AIReviewer.get_batch_review(st.session_state.results, st.session_state.run_custom_instructions, model_choice, api_keys)
+                if "error" in batched_ai_reviews:
+                    st.error(f"AI review failed: {batched_ai_reviews['error']}")
                 else:
-                    st.session_state.global_ai_config = initial_review.pop('session_config', None)
-                    for product_name, review in initial_review.items():
+                    st.session_state.global_ai_config = batched_ai_reviews.pop('session_config', None)
+                    for product_name, review in batched_ai_reviews.items():
                         if product_name in st.session_state.results:
                             st.session_state.results[product_name]['ai_review'] = review
-                    # Prime the chat history
-                    st.session_state.chat_history.append({"role": "user", "parts": [st.session_state.full_context_for_chat]})
-                    st.session_state.chat_history.append({"role": "model", "parts": [str(initial_review)]})
                 progress_bar.empty()
 
     if st.session_state.results:
@@ -519,35 +538,6 @@ def main():
                     if status == 'PASS' and not result['validation']['warnings']:
                         st.success("- All automated checks passed.")
         
-        st.markdown("---")
-        st.markdown("### 💬 Follow-up Analysis")
-        
-        # Display chat history
-        for message in st.session_state.get('chat_history', []):
-             # We only want to show the user's follow-up questions and the model's answers to them
-            if message['role'] == 'user' and message['parts'][0] != st.session_state.get('full_context_for_chat'):
-                with st.chat_message("user"):
-                    st.markdown(message['parts'][0])
-            elif message['role'] == 'model' and str(message['parts'][0]) != str(st.session_state.results):
-                 with st.chat_message("assistant"):
-                    st.markdown(message['parts'][0])
-
-        if prompt := st.chat_input("Ask a follow-up question about the review..."):
-            st.session_state.chat_history.append({"role": "user", "parts": [prompt]})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.spinner("Thinking..."):
-                api_keys = {
-                    'anthropic': st.secrets.get("ANTHROPIC_API_KEY"),
-                    'openai': st.secrets.get("OPENAI_API_KEY"),
-                    'google': st.secrets.get("GOOGLE_API_KEY")
-                }
-                follow_up_response = AIReviewer.get_review(None, None, model_choice, api_keys, chat_history=st.session_state.chat_history)
-                with st.chat_message("assistant"):
-                    st.markdown(follow_up_response)
-                st.session_state.chat_history.append({"role": "model", "parts": [follow_up_response]})
-
         st.markdown("---")
         st.markdown("### 📥 Finalize & Export")
         if all_findings_reviewed:
