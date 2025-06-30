@@ -177,8 +177,13 @@ class DynamicValidator:
         text_lower = text.lower()
         if 'made in china' not in text_lower and 'made in taiwan' not in text_lower:
             results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
-        if 'vive health' not in text_lower and 'vive®' not in text_lower:
+        
+        # --- MODIFICATION START ---
+        # More robust check for "vive" branding to account for OCR errors on stylized logos.
+        if 'vive' not in text_lower:
             results['issues'].append('Missing Vive branding.')
+        # --- MODIFICATION END ---
+            
         sku = doc_info.get('sku', 'N/A')
         for suffix, color in DynamicValidator.SKU_SUFFIX_MAP.items():
             if sku.upper().endswith(suffix) and color not in text_lower:
