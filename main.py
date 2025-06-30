@@ -1,8 +1,8 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v4.1 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
-sign-off checklist, a fully working and auditable CSV export, and clearer
-workflow guidance.
+v4.2 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
+sign-off checklist and follow-up chat, a fully working and auditable CSV export,
+and a cleaner, more robust workflow.
 """
 
 import streamlit as st
@@ -208,91 +208,95 @@ class AIReviewer:
         return models
 
     @staticmethod
-    def get_batch_review(all_products_data, custom_instructions, model_choice, api_keys, chat_history=None):
+    def get_review(all_products_data, custom_instructions, model_choice, api_keys, chat_history=None):
         if not model_choice: return {"error": "No AI model selected or configured."}
         
-        prompt = f"""
-        You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
+        # Build the initial prompt for the first turn
+        if not chat_history:
+            initial_prompt = f"""
+            You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
 
-        **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
-        ---
-        {custom_instructions if custom_instructions else "No custom instructions provided. Standard review procedures apply."}
-        ---
-        You MUST treat these custom instructions as a direct order from the project lead and apply them globally to all product groups in this batch.
+            **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
+            ---
+            {custom_instructions if custom_instructions else "No custom instructions provided. Standard review procedures apply."}
+            ---
+            You MUST treat these custom instructions as a direct order from the project lead and apply them globally to all product groups in this batch.
 
-        Begin your entire response with a single "Session Configuration" block that restates these custom instructions to confirm you have understood them.
+            Begin your entire response with a single "Session Configuration" block that restates these custom instructions to confirm you have understood them.
 
-        Then, for each product group below, provide a structured review:
-        1.  **Product Title:** `### Product: [Product Name]`
-        2.  **Manager's Overview:** A high-level paragraph on your overall impression.
-        3.  **Actionable Findings:**
-            - For each issue, you MUST classify it as either a "Critical Error" or a "Potential Inconsistency".
-            - A **Critical Error** is a definite mistake (e.g., typo, wrong SKU, direct contradiction).
-            - A **Potential Inconsistency** is a subtle issue that requires human review (e.g., slight color name variation, ambiguous wording).
-            - Present each finding using the "Claim, Evidence, Reasoning" format.
-            - **Claim:** Start with the classification (e.g., `Critical Error: SKU Mismatch`).
-            - **Evidence:** Quote the exact text or describe the visual element, and name the source file.
-            - **Reasoning:** Explain why it's a problem.
-        4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
-        5.  **Repeat** this structured process for every product group.
-        """
-        
+            Then, for each product group below, provide a structured review:
+            1.  **Product Title:** `### Product: [Product Name]`
+            2.  **Manager's Overview:** A high-level paragraph on your overall impression.
+            3.  **Actionable Findings:**
+                - For each issue, you MUST classify it as either a "Critical Error" or a "Suggestion for Improvement".
+                - A **Critical Error** is a definite mistake (e.g., typo, wrong SKU, direct contradiction).
+                - A **Suggestion for Improvement** is a non-critical issue that requires human review (e.g., layout suggestion, minor wording change).
+                - Present each finding using the "Claim, Evidence, Reasoning" format.
+                - **Claim:** Start with the classification (e.g., `Critical Error: SKU Mismatch`).
+                - **Evidence:** Quote the exact text or describe the visual element, and name the source file.
+                - **Reasoning:** Explain why it's a problem.
+            4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
+            5.  **Repeat** this structured process for every product group.
+            """
+            
+            # Build the full context for the initial review
+            full_context = [initial_prompt]
+            text_content_for_all = ""
+            for product_name, data in all_products_data.items():
+                text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
+                for filename, file_data in data.get('files', {}).items():
+                     if file_data.get('extraction', {}).get('success'):
+                        text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
+            full_context.append(text_content_for_all)
+            
+            # This is the content that will be sent to the model
+            model_payload = [{"role": "user", "content": " ".join(str(item) for item in full_context if isinstance(item, str))}]
+            st.session_state.full_context_for_chat = model_payload # Store for follow-ups
+
+        else: # This is a follow-up question
+            model_payload = chat_history
+
         try:
-            model_input = [prompt]
-            # Bug fix: Ensure we handle cases where extraction fails and keys are missing
-            if "Gemini" in model_choice:
-                for product_name, data in all_products_data.items():
-                    model_input.append(f"\n\n--- Start of Product Group: {product_name} ---\n")
-                    for filename, file_data in data.get('files', {}).items():
-                        if file_data.get('extraction', {}).get('success'):
-                            model_input.append(f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:1500]}")
-                            for img in file_data['extraction']['images']: model_input.append(img)
-            else:
-                text_content_for_all = ""
-                for product_name, data in all_products_data.items():
-                    text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
-                    for filename, file_data in data.get('files', {}).items():
-                         if file_data.get('extraction', {}).get('success'):
-                            text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
-                model_input.append(text_content_for_all)
-
             response_text = ""
             if "Claude" in model_choice and CLAUDE_AVAILABLE:
                 client = anthropic.Anthropic(api_key=api_keys['anthropic'], max_retries=3)
-                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input if isinstance(item, str))}]
-                response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.1, messages=messages)
+                response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.2, messages=model_payload)
                 response_text = response.content[0].text
             elif "GPT" in model_choice and OPENAI_AVAILABLE:
                 client = openai.OpenAI(api_key=api_keys['openai'])
-                messages = [{"role": "user", "content": " ".join(str(item) for item in model_input if isinstance(item, str))}]
-                response = client.chat.completions.create(model="gpt-4o", max_tokens=4096, temperature=0.1, messages=messages)
+                response = client.chat.completions.create(model="gpt-4o", max_tokens=4096, temperature=0.2, messages=model_payload)
                 response_text = response.choices[0].message.content
             elif "Gemini" in model_choice and GEMINI_AVAILABLE:
+                # This part would need to be enhanced to handle multimodal chat history correctly
                 genai.configure(api_key=api_keys['google'])
                 model = genai.GenerativeModel('gemini-1.5-pro-latest')
-                response = model.generate_content(model_input)
+                # Simplified chat for Gemini, sending only the latest prompt
+                response = model.generate_content(model_payload[-1]['content'])
                 response_text = response.text
             else:
                 return {"error": "Selected AI model is not available or configured correctly."}
 
-            ai_reviews = {}
-            product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
-            if len(product_sections) > 1:
-                session_config = product_sections[0]
-                ai_reviews['session_config'] = session_config
-                for i in range(1, len(product_sections), 2):
-                    product_name_from_ai = product_sections[i].strip()
-                    product_review = product_sections[i+1].strip()
-                    for original_product_name in all_products_data.keys():
-                        if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
-                            ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
-                            break
-            else:
-                ai_reviews['batch_summary'] = response_text
-            return ai_reviews
+            if not chat_history: # This was an initial review, so parse it
+                ai_reviews = {}
+                product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
+                if len(product_sections) > 1:
+                    session_config = product_sections[0]
+                    ai_reviews['session_config'] = session_config
+                    for i in range(1, len(product_sections), 2):
+                        product_name_from_ai = product_sections[i].strip()
+                        product_review = product_sections[i+1].strip()
+                        for original_product_name in all_products_data.keys():
+                            if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
+                                ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
+                                break
+                else:
+                    ai_reviews['batch_summary'] = response_text
+                return ai_reviews
+            else: # This was a follow-up, just return the text
+                return response_text
 
         except Exception as e:
-            logger.error(f"AI batch review failed with model {model_choice}: {e}")
+            logger.error(f"AI review failed with model {model_choice}: {e}")
             return {"error": f"An error occurred during AI batch review: {e}"}
 
 # --- Helper Functions & UI ---
