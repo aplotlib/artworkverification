@@ -1,9 +1,9 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v2.0 - With OCR, Product Grouping, and Dynamic Checklist Validation
+v2.1 - Now supports PDF (with OCR), DOCX, and XLSX files.
 
-This application analyzes a complete set of product packaging documents (artwork, manuals, etc.),
-groups them by product, uses OCR to extract text from image-based PDFs, and validates them
+This application analyzes a complete set of product packaging documents,
+groups them by product, extracts text from various file formats, and validates them
 against Vive Health's specific proofreading checklists.
 """
 
@@ -15,7 +15,7 @@ from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
 import pytesseract
-import base64
+import docx # For reading .docx files
 
 # --- Configuration ---
 # Configure logging
@@ -41,41 +41,78 @@ except ImportError:
 # --- Core Logic Classes ---
 
 class DocumentProcessor:
-    """Handles robust text extraction from PDFs using OCR."""
+    """Handles robust text extraction from multiple file types."""
+
     @staticmethod
-    def extract_text_with_ocr(file_buffer, filename):
+    def extract_text(file, filename):
         """
-        Extracts text from a PDF, page by page, using OCR.
-        This is essential for PDFs where text is part of an image or shape.
+        Routes the file to the correct text extraction method based on its type.
         """
+        file_type = file.type
+        file_buffer = file
+        
+        if file_type == "application/pdf":
+            return DocumentProcessor._extract_text_from_pdf(file_buffer, filename)
+        elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            return DocumentProcessor._extract_text_from_word(file_buffer, filename)
+        elif file_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            return DocumentProcessor._extract_text_from_excel(file_buffer, filename)
+        else:
+            error_msg = f"Unsupported file type: {file_type}"
+            logger.warning(error_msg)
+            return {'success': False, 'text': '', 'method': 'Unsupported', 'errors': [error_msg]}
+
+    @staticmethod
+    def _extract_text_from_pdf(file_buffer, filename):
+        """Extracts text from a PDF using OCR for robustness."""
         text = ""
-        errors = []
         try:
             file_buffer.seek(0)
             pdf_document = fitz.open(stream=file_buffer.read(), filetype="pdf")
             for page_num in range(len(pdf_document)):
                 page = pdf_document.load_page(page_num)
-                # Convert page to an image (pixmap)
-                pix = page.get_pixmap(dpi=300)  # Higher DPI for better OCR
+                pix = page.get_pixmap(dpi=300)
                 img_bytes = pix.tobytes("png")
                 image = Image.open(BytesIO(img_bytes))
-                
-                # Use Tesseract to OCR the image
                 page_text = pytesseract.image_to_string(image, lang='eng')
                 text += f"\n\n--- Page {page_num + 1} ---\n{page_text}"
-            
             pdf_document.close()
-            
-            if not text.strip():
-                errors.append("OCR failed to extract any text.")
-                
-            logger.info(f"Successfully extracted text from {filename} using OCR.")
-            return {'success': True, 'text': text, 'method': 'OCR (Tesseract)', 'errors': errors}
-
+            logger.info(f"Successfully extracted text from PDF {filename} using OCR.")
+            return {'success': True, 'text': text, 'method': 'PDF-OCR', 'errors': []}
         except Exception as e:
-            logger.error(f"OCR extraction failed for {filename}: {e}")
-            errors.append(f"An unexpected error occurred during OCR: {e}")
-            return {'success': False, 'text': '', 'method': 'OCR (Tesseract)', 'errors': errors}
+            logger.error(f"PDF-OCR extraction failed for {filename}: {e}")
+            return {'success': False, 'text': '', 'method': 'PDF-OCR', 'errors': [f"Error during PDF processing: {e}"]}
+
+    @staticmethod
+    def _extract_text_from_word(file_buffer, filename):
+        """Extracts text from a .docx file."""
+        text = ""
+        try:
+            doc = docx.Document(file_buffer)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+            logger.info(f"Successfully extracted text from Word file {filename}.")
+            return {'success': True, 'text': text, 'method': 'DOCX-Parser', 'errors': []}
+        except Exception as e:
+            logger.error(f"DOCX extraction failed for {filename}: {e}")
+            return {'success': False, 'text': '', 'method': 'DOCX-Parser', 'errors': [f"Error reading .docx file: {e}"]}
+
+    @staticmethod
+    def _extract_text_from_excel(file_buffer, filename):
+        """Extracts text from all sheets of an .xlsx file."""
+        text = ""
+        try:
+            xls = pd.ExcelFile(file_buffer)
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+                # Convert the entire sheet to a string format
+                text += f"\n\n--- Sheet: {sheet_name} ---\n"
+                text += df.to_string()
+            logger.info(f"Successfully extracted text from Excel file {filename}.")
+            return {'success': True, 'text': text, 'method': 'XLSX-Parser', 'errors': []}
+        except Exception as e:
+            logger.error(f"XLSX extraction failed for {filename}: {e}")
+            return {'success': False, 'text': '', 'method': 'XLSX-Parser', 'errors': [f"Error reading .xlsx file: {e}"]}
 
 
 class DocumentIdentifier:
@@ -87,7 +124,8 @@ class DocumentIdentifier:
         'Quick Start Guide': {'keywords': ['quickstart', 'qsg'], 'content': ['quick start guide', 'application instructions', 'warranty information']},
         'Shipping Mark': {'keywords': ['shipping', 'mark'], 'content': ['item name:', 'po #:', r'[A-Z]{3,4}\d{4,}[A-Z]{0,3}\s*-\s*\d+']},
         'Washtag': {'keywords': ['washtag'], 'content': ['polyester', 'machine wash', 'do not iron']},
-        'Logo Tag': {'keywords': ['logo'], 'content': []}, # Simple logo files might have no text
+        'Logo Tag': {'keywords': ['logo'], 'content': []},
+        'Requirements Checklist': {'keywords': ['checklist', 'proofreading'], 'content': ['proofreading checklist', 'hcpcs code']}
     }
 
     @staticmethod
@@ -101,7 +139,7 @@ class DocumentIdentifier:
             if any(k in filename_lower for k in rules['keywords']):
                 info['type'] = doc_type
                 break
-            if any(re.search(c, text_lower) for c in rules['content']):
+            if rules.get('content') and any(re.search(c, text_lower) for c in rules['content']):
                 info['type'] = doc_type
                 break
         
@@ -122,6 +160,7 @@ class DocumentIdentifier:
 
         return info
 
+
 class DynamicValidator:
     """Validates documents against Vive Health's dynamic proofreading checklist."""
 
@@ -141,6 +180,11 @@ class DynamicValidator:
     @staticmethod
     def _validate_default(text, doc_info):
         return {'status': 'NEEDS REVIEW', 'issues': [], 'warnings': ['No specific validation rules for this document type.']}
+
+    @staticmethod
+    def _validate_requirements_checklist(text, doc_info):
+        # Checklists are for reference and don't need validation themselves
+        return {'status': 'PASS', 'issues': [], 'warnings': ['This is a reference document.']}
 
     @staticmethod
     def _validate_packaging_artwork(text, doc_info):
@@ -226,7 +270,7 @@ class AIReviewer:
         return None, None
 
     @staticmethod
-    def get_review(product_files_data, api_type, api_key):
+def get_review(product_files_data, api_type, api_key):
         if not api_key: return "AI review disabled (no API key)."
         if not product_files_data: return "No data to review."
 
@@ -240,26 +284,28 @@ class AIReviewer:
 
         prompt = f"""
         You are a meticulous Quality Control specialist for Vive Health, reviewing a package of documents for a single product before production.
-        Your task is to find inconsistencies and errors that automated checks might miss.
+        One of these documents is likely a 'Requirements Checklist' from an Excel or Word file. The other files are artwork (PDFs).
+
+        Your task is to find inconsistencies and errors.
 
         PRODUCT DOCUMENT SET:
-        {full_text_context[:4000]} 
+        {full_text_context[:8000]} 
 
         INSTRUCTIONS:
-        1.  **Overall Summary:** Provide a 1-2 sentence summary of the product package and its overall quality.
-        2.  **Cross-File Consistency Check (CRITICAL):** Carefully compare all provided file contents. Is the product name, SKU, color/variant, and other key information perfectly consistent across all documents (Packaging, Shipping Mark, Manual, etc.)? List any and all inconsistencies you find. If there are no inconsistencies, state that "All documents are consistent."
-        3.  **Spelling & Grammar:** Briefly note any spelling or grammatical errors found in the text.
-        4.  **Final Recommendation:** Based on your review, state if the package is "Approved for Production" or "Needs Correction" and why.
+        1.  **Cross-File Consistency Check (CRITICAL):** Carefully compare all provided artwork files against the rules defined in the 'Requirements Checklist' document. Then, compare all the artwork files to EACH OTHER. Is the product name, SKU, color/variant, and other key information perfectly consistent across all documents?
+        2.  **List Discrepancies:** Provide a clear, bulleted list of any and all inconsistencies you find. For each point, state the filename and the specific error.
+        3.  **Spelling & Grammar:** Briefly note any spelling or grammatical errors found in the text on the artwork files.
+        4.  **Final Recommendation:** Based on your review, state if the package is "Approved for Production" or "Needs Correction" and provide a brief summary of why. If there are no issues, state that "All documents are consistent and approved."
         """
         
         try:
             if api_type == 'openai':
                 client = openai.OpenAI(api_key=api_key)
-                response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=600, temperature=0.1)
+                response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=800, temperature=0.1)
                 return response.choices[0].message.content
             elif api_type == 'claude':
                 client = anthropic.Anthropic(api_key=api_key)
-                response = client.messages.create(model="claude-3-5-sonnet-20240620", messages=[{"role": "user", "content": prompt}], max_tokens=600, temperature=0.1)
+                response = client.messages.create(model="claude-3-5-sonnet-20240620", messages=[{"role": "user", "content": prompt}], max_tokens=800, temperature=0.1)
                 return response.content[0].text
         except Exception as e:
             logger.error(f"AI review failed: {e}")
@@ -294,7 +340,7 @@ def prepare_report_data(results):
             else:
                 issues = "; ".join(result['validation']['issues'])
                 warnings = "; ".join(result['validation']['warnings'])
-                details = f"Issues: {issues}. Warnings: {warnings}."
+                details = f"Issues: {issues}. Warnings: {warnings}." if issues or warnings else "All checks passed."
                 row = {
                     'Product': product_name,
                     'File Name': filename,
@@ -336,8 +382,10 @@ def main():
         st.info("The Tesseract OCR engine must be installed on the system for this app to function correctly.")
         st.markdown("---")
         st.markdown("### 📤 Upload Documents")
+        # --- MODIFIED FILE UPLOADER ---
         uploaded_files = st.file_uploader(
-            "Select all PDF files for one or more products:", type=['pdf'],
+            "Upload all artwork (PDF) and requirements (XLSX, DOCX) files:",
+            type=['pdf', 'xlsx', 'docx'],
             accept_multiple_files=True,
             help="The app will automatically group files by product name."
         )
@@ -359,7 +407,8 @@ def main():
                     files_processed += 1
                     progress_bar.progress(files_processed / total_files, f"Analyzing: {file.name}")
                     
-                    extraction = DocumentProcessor.extract_text_with_ocr(file, file.name)
+                    # Use the new universal text extractor
+                    extraction = DocumentProcessor.extract_text(file, file.name)
                     if not extraction['success']:
                         st.session_state.results[product_name]['files'][file.name] = {'error': extraction['errors'][0]}
                         continue
@@ -417,7 +466,7 @@ def main():
                     else:
                         icon = "❌"
                     
-                    st.markdown(f"**{icon} {filename}** (Type: *{doc_type}* | SKU: *{sku}*) - **Status: {status}**")
+                    st.markdown(f"**{icon} {filename}** (Type: *{doc_type}* | Method: *{result['extraction']['method']}*) - **Status: {status}**")
                     
                     if result['validation']['issues']:
                         for issue in result['validation']['issues']:
@@ -425,7 +474,7 @@ def main():
                     if result['validation']['warnings']:
                         for warning in result['validation']['warnings']:
                             st.warning(f"- {warning}")
-                    if status == 'PASS':
+                    if status == 'PASS' and not result['validation']['warnings']:
                         st.success("- All specific checks passed.")
 
 if __name__ == "__main__":
