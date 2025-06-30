@@ -296,8 +296,6 @@ def group_files_by_product(uploaded_files):
         groups[base_name].append(file)
     return groups
 
-# --- MODIFICATION START ---
-# The export function is completely overhauled to create a detailed audit log.
 def prepare_report_data_for_export(results):
     """Converts the nested results dictionary to a flat, auditable list for DataFrame creation."""
     report_rows = []
@@ -334,7 +332,7 @@ def prepare_report_data_for_export(results):
 
         # Add rows for automated checks
         for filename, result in data['files'].items():
-            if result['validation']['issues']:
+            if result.get('validation', {}).get('issues'):
                 for issue in result['validation']['issues']:
                     report_rows.append({
                         'Product': product_name, 'Finding Type': f'Automated Check ({filename})', 'Details': issue,
@@ -342,7 +340,6 @@ def prepare_report_data_for_export(results):
                         'Custom Instructions for Run': custom_instructions
                     })
     return report_rows
-# --- MODIFICATION END ---
 
 def render_interactive_ai_review(review_text, product_name):
     """Parses the AI review and renders it with interactive sign-off widgets."""
@@ -355,7 +352,6 @@ def render_interactive_ai_review(review_text, product_name):
     if f"findings_{product_name}" not in st.session_state:
         st.session_state[f"findings_{product_name}"] = {
             "total": len(claims),
-            "reviewed_count": 0,
             "states": {i: {"decision": "Pending Review", "notes": ""} for i in range(len(claims))}
         }
     
@@ -365,7 +361,6 @@ def render_interactive_ai_review(review_text, product_name):
     st.info(review_text.split("**Claim:**")[0])
 
     if not claims:
-        # If there are no claims, just show the recommendation
         recommendation = review_text.split("**Recommendation:**")[-1]
         st.markdown(f"**Recommendation:** {recommendation}")
         return
@@ -379,7 +374,6 @@ def render_interactive_ai_review(review_text, product_name):
 
             st.markdown("---")
             
-            # Interactive sign-off widgets
             cols = st.columns([2, 3])
             decision_key = f"decision_{product_name}_{i}"
             notes_key = f"notes_{product_name}_{i}"
@@ -400,11 +394,9 @@ def render_interactive_ai_review(review_text, product_name):
                     placeholder="e.g., 'Updated artwork and sent to printer.'"
                 )
 
-    # Display the final recommendation from the AI
     recommendation = review_text.split("**Recommendation:**")[-1]
     st.markdown(f"**Recommendation:** {recommendation}")
 
-    # Check if all findings have been reviewed
     reviewed_count = sum(1 for state in product_state["states"].values() if state["decision"] != "Pending Review")
     if reviewed_count == product_state["total"]:
         st.success("✅ Well done! All findings for this product have been reviewed.")
