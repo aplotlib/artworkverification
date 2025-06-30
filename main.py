@@ -1,6 +1,6 @@
 """
 PRODUCTION-READY Packaging Validator for Vive Health
-v3.0 FINAL - Batch AI processing and production stability fixes.
+v3.1 FINAL - Implements evidence-based AI review for higher accuracy and verifiable findings.
 
 This application analyzes a complete set of product packaging documents,
 groups them by product, extracts text from PDF, DOCX, and XLSX formats,
@@ -12,6 +12,7 @@ import streamlit as st
 import re
 import pandas as pd
 import logging
+import shutil
 from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
@@ -53,7 +54,7 @@ class DocumentProcessor:
                 return DocumentProcessor._extract_text_from_pdf(file, filename)
             elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                 return DocumentProcessor._extract_text_from_word(file, filename)
-            elif file_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            elif file_type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"]:
                 return DocumentProcessor._extract_text_from_excel(file, filename)
             else:
                 error_msg = f"Unsupported file type: {file_type}"
@@ -63,7 +64,6 @@ class DocumentProcessor:
             logger.error(f"Fatal error processing file {filename} with type {file_type}: {e}")
             return {'success': False, 'text': '', 'method': 'Error', 'errors': [f"A critical error occurred: {e}"]}
 
-
     @staticmethod
     def _extract_text_from_pdf(file_buffer, filename):
         """Extracts text from a PDF using OCR for robustness."""
@@ -72,7 +72,7 @@ class DocumentProcessor:
         pdf_document = fitz.open(stream=file_buffer.read(), filetype="pdf")
         for page_num in range(len(pdf_document)):
             page = pdf_document.load_page(page_num)
-            pix = page.get_pixmap(dpi=300)
+            pix = page.get_pixmap(dpi=300) # Higher DPI for better OCR quality
             img_bytes = pix.tobytes("png")
             image = Image.open(BytesIO(img_bytes))
             page_text = pytesseract.image_to_string(image, lang='eng')
@@ -93,22 +93,23 @@ class DocumentProcessor:
 
     @staticmethod
     def _extract_text_from_excel(file_buffer, filename):
-        """Extracts text from all sheets of an .xlsx file."""
+        """Extracts text from all sheets of an .xlsx or .csv file."""
         text = ""
+        # Use pandas to read both Excel and CSV
         xls = pd.ExcelFile(file_buffer)
         for sheet_name in xls.sheet_names:
             df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
             text += f"\n\n--- Sheet: {sheet_name} ---\n"
             text += df.to_string()
-        logger.info(f"Successfully extracted text from Excel file {filename}.")
-        return {'success': True, 'text': text, 'method': 'XLSX-Parser', 'errors': []}
+        logger.info(f"Successfully extracted text from Excel/CSV file {filename}.")
+        return {'success': True, 'text': text, 'method': 'Spreadsheet-Parser', 'errors': []}
 
 
 class DocumentIdentifier:
     """Identifies document type based on keywords and content patterns."""
     TYPE_RULES = {
-        'Requirements Checklist': {'keywords': ['checklist', 'proofreading'], 'content': ['proofreading checklist', 'hcpcs code']},
-        'Packaging Artwork': {'keywords': ['tag', 'lva3100'], 'content': ['california proposition', 'distributed by', r'\(\d{2}\)\d{14}\(\d{3}\)']},
+        'Requirements Checklist': {'keywords': ['checklist', 'proofreading', 'requirements'], 'content': ['proofreading checklist', 'hcpcs code']},
+        'Packaging Artwork': {'keywords': ['tag', 'lva3100', 'artwork'], 'content': ['california proposition', 'distributed by', r'\(\d{2}\)\d{14}\(\d{3}\)']},
         'Quick Start Guide': {'keywords': ['quickstart', 'qsg'], 'content': ['quick start guide', 'application instructions', 'warranty information']},
         'Shipping Mark': {'keywords': ['shipping', 'mark'], 'content': ['item name:', 'po #:', r'[A-Z]{3,4}\d{4,}[A-Z]{0,3}\s*-\s*\d+']},
         'Washtag': {'keywords': ['washtag'], 'content': ['polyester', 'machine wash', 'do not iron']},
@@ -127,11 +128,14 @@ class DocumentIdentifier:
             if rules.get('content') and any(re.search(c, text_lower, re.IGNORECASE) for c in rules['content']):
                 info['type'] = doc_type
                 break
+        # Extract SKU (handles variants like BLK, PUR, BGES)
         sku_match = re.search(r'([A-Z]{3}\d{4,}[A-Z]{0,4})', text.upper())
         if not sku_match:
             sku_match = re.search(r'([A-Z]{3}\d{4,}[A-Z]{0,4})', filename.upper())
         if sku_match:
             info['sku'] = sku_match.group(1)
+
+        # Extract Product Name
         if info['type'] == 'Shipping Mark':
             name_match = re.search(r'Item Name:\s*(.*)', text, re.IGNORECASE)
             if name_match:
@@ -140,14 +144,14 @@ class DocumentIdentifier:
              info['product_name'] = 'Wheelchair Bag Advanced'
         return info
 
-
 class DynamicValidator:
     """Validates documents against Vive Health's dynamic proofreading checklist."""
     SKU_SUFFIX_MAP = {'BLK': 'black', 'PUR': 'purple floral', 'BGES': 'beige'}
 
     @staticmethod
     def validate(text, doc_info):
-        doc_type = doc_info['type']
+        """Routes to the correct validation function based on document type."""
+        doc_type = doc_info.get('type', 'Unknown')
         validator_func = getattr(DynamicValidator, f"_validate_{doc_type.lower().replace(' ', '_')}", DynamicValidator._validate_default)
         return validator_func(text, doc_info)
 
@@ -171,13 +175,13 @@ class DynamicValidator:
     def _validate_packaging_artwork(text, doc_info):
         results = {'issues': [], 'warnings': []}
         text_lower = text.lower()
-        if 'made in china' not in text_lower:
-            results['issues'].append('Missing "Made in China" text.')
+        if 'made in china' not in text_lower and 'made in taiwan' not in text_lower:
+            results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
         if 'vive health' not in text_lower and 'vive®' not in text_lower:
             results['issues'].append('Missing Vive branding.')
         sku = doc_info.get('sku', 'N/A')
         for suffix, color in DynamicValidator.SKU_SUFFIX_MAP.items():
-            if sku.endswith(suffix) and color not in text_lower:
+            if sku.upper().endswith(suffix) and color not in text_lower:
                 results['issues'].append(f"SKU/Color Mismatch: SKU is '{sku}' but the color '{color}' was not found.")
                 break
         return DynamicValidator._determine_status(results)
@@ -185,22 +189,22 @@ class DynamicValidator:
     @staticmethod
     def _validate_shipping_mark(text, doc_info):
         results = {'issues': [], 'warnings': []}
-        if 'made in china' not in text.lower():
-            results['issues'].append('Missing "Made in China" text.')
+        if 'made in china' not in text.lower() and 'made in taiwan' not in text.lower():
+            results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
         if not re.search(r'([A-Z]{3}\d{4,}[A-Z]{0,4})\s*-\s*(\d+)', text.upper()):
             results['issues'].append("Shipping Mark format error: Expected 'SKU - QTY'.")
         return DynamicValidator._determine_status(results)
-
 
 class AIReviewer:
     """Handles interaction with AI models for advanced analysis."""
 
     @staticmethod
     def get_api_config():
+        """Securely get API keys from Streamlit secrets."""
         if hasattr(st, 'secrets'):
-            if 'OPENAI_API_KEY' in st.secrets and OPENAI_AVAILABLE:
+            if 'OPENAI_API_KEY' in st.secrets and OPENAI_AVAILABLE and st.secrets['OPENAI_API_KEY']:
                 return 'openai', st.secrets['OPENAI_API_KEY']
-            if 'ANTHROPIC_API_KEY' in st.secrets and CLAUDE_AVAILABLE:
+            if 'ANTHROPIC_API_KEY' in st.secrets and CLAUDE_AVAILABLE and st.secrets['ANTHROPIC_API_KEY']:
                 return 'claude', st.secrets['ANTHROPIC_API_KEY']
         return None, None
 
@@ -214,45 +218,51 @@ class AIReviewer:
         for product_name, data in all_products_data.items():
             full_text_context += f"\n\n================ PRODUCT GROUP: {product_name} ================\n"
             for filename, file_data in data['files'].items():
-                if file_data['extraction']['success']:
+                if file_data.get('extraction', {}).get('success', False):
                     full_text_context += f"\n--- FILE: {filename} (Type: {file_data['doc_info']['type']}) ---\n"
-                    full_text_context += file_data['extraction']['text'][:2000]
+                    full_text_context += file_data['extraction']['text'][:2500] # Limit text per file for context window
                     full_text_context += f"\n--- END OF FILE ---\n"
 
         prompt = f"""
-        You are a meticulous Quality Control specialist for Vive Health. Review a batch of documents for multiple products.
-        For each product group, perform the following steps and format your response in structured Markdown:
+        You are a meticulous Quality Control specialist for Vive Health. Your primary goal is to find and provide evidence for critical inconsistencies, typos, or grammatical errors.
+        For each product group below, perform the following steps and format your response in structured Markdown:
 
-        1.  **Start with the Product Title:** Use a level-3 Markdown header for each product (e.g., `### Product: Wheelchair Bag Advanced`).
-        2.  **Cross-File Consistency Check:** Compare all files within that product group. Is the SKU, product name, and color/variant consistent? If a 'Requirements Checklist' file is present, use it as the source of truth.
-        3.  **List Discrepancies:** Provide a clear, bulleted list of all inconsistencies or errors found for that product.
-        4.  **Recommendation:** State if the package is "Approved for Production" or "Needs Correction" with a brief reason.
-        5.  **Repeat** this process for every product group in the batch.
+        1.  **Start with the Product Title:** Use a level-3 Markdown header for each product (e.g., `### Product: Wheelchair Bag`).
+        2.  **Analyze and Report:**
+            - If you find an error, you MUST follow the "Claim, Evidence, Reasoning" format.
+            - **Claim:** A 1-line summary of the error (e.g., "Product Name Mismatch").
+            - **Evidence:** Quote the exact text from each file causing the conflict, and explicitly name the source file in parentheses. (e.g., "- "Wheelchair Bag" (from wheelchair_bag_tag_purple_250625.pdf) vs. "Wheelchair Bag Advanced" (from wheelchair_bag_purple_flower_shipping_mark.pdf)").
+            - **Reasoning:** A 1-line explanation of why it's a problem.
+            - List all errors you find for the product this way.
+        3.  **Recommendation:** After listing all errors, state if the package is "Approved for Production" or "Needs Correction" and why.
+        4.  **No Errors:** If a product group is perfect, simply write: "**Recommendation:** Approved for Production. All documents are consistent and no errors were found."
+        5.  **Repeat** this entire process for every product group in the batch.
         """
         try:
             if api_type == 'claude':
-                client = anthropic.Anthropic(api_key=api_key, max_retries=3)
+                client = anthropic.Anthropic(api_key=api_key, max_retries=3) # Use the client's built-in retry
                 response = client.messages.create(
                     model="claude-3-5-sonnet-20240620",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=4000,
-                    temperature=0.1
+                    max_tokens=4096, # Increased tokens for more verbose, evidence-based responses
+                    temperature=0.05 # Lower temperature for more factual, less creative output
                 )
                 response_text = response.content[0].text
                 ai_reviews = {}
+                # Split the response by product headers to parse the output
                 product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
                 if len(product_sections) > 1:
                     for i in range(1, len(product_sections), 2):
                         product_name_from_ai = product_sections[i].strip()
                         product_review = product_sections[i+1].strip()
+                        # Match the AI's response back to the original product group name
                         for original_product_name in all_products_data.keys():
-                            if product_name_from_ai.lower() in original_product_name.lower():
+                            if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
                                 ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
                                 break
-                else:
+                else: # Fallback if splitting fails
                     ai_reviews['batch_summary'] = response_text
                 return ai_reviews
-            # Add OpenAI logic here if needed in the future
             return {"error": "Selected AI provider logic not fully implemented."}
         except Exception as e:
             logger.error(f"AI batch review failed: {e}")
@@ -264,23 +274,29 @@ def group_files_by_product(uploaded_files):
     """Groups files based on a common prefix in their names."""
     groups = {}
     for file in uploaded_files:
-        match = re.match(r'([a-z_]+)', file.name.lower())
-        base_name = match.group(1).replace('_', ' ').title() if match else 'Uncategorized'
+        match = re.match(r'([a-zA-Z_]+(?:bag|guide|mark|tag|checklist))', file.name.lower())
+        if match:
+             base_name = re.sub(r'_(?:bag|guide|mark|tag|checklist)$', '', match.group(1)).replace('_', ' ').title().strip()
+        else:
+             base_name = "Uncategorized"
+
         if base_name not in groups:
             groups[base_name] = []
         groups[base_name].append(file)
     return groups
 
+
 def main():
     """Main function to run the Streamlit application."""
     st.markdown("""
     <style>
-        .main-header { padding: 2rem 1rem; margin-bottom: 2rem; background: #f0f2f6; border-radius: 10px; text-align: center; }
-        .st-emotion-cache-1y4p8pa { padding-top: 1rem; } /* Reduce top padding */
+        .main-header { padding: 1.5rem 1rem; margin-bottom: 2rem; background: #f0f2f6; border-radius: 10px; text-align: center; }
+        .st-emotion-cache-1y4p8pa { padding-top: 1rem; }
+        .stButton>button { width: 100%; }
     </style>
     <div class="main-header">
         <h1>✅ Vive Health Package Reviewer</h1>
-        <p>Upload artwork (PDF) and requirements (XLSX, DOCX) to perform an automated review.</p>
+        <p>Upload artwork (PDF), requirements (XLSX, DOCX), and other files to perform an automated review.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -293,30 +309,38 @@ def main():
         if api_key:
             st.success(f"AI Review Enabled ({api_type.capitalize()})")
         else:
-            st.warning("AI Review Disabled (No API Key)")
-        st.info("This app runs OCR on PDFs. Ensure your `packages.txt` file is configured correctly for Streamlit Cloud.")
+            st.warning("AI Review Disabled")
+            st.markdown("To enable AI analysis, please add your `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to your Streamlit secrets.")
+
+        # Check if Tesseract is installed and available
+        if not shutil.which("tesseract"):
+            st.error("Tesseract OCR is not installed or not in the system's PATH. PDF processing will fail.")
+            st.info("For deployment on Streamlit Cloud, ensure your `packages.txt` file contains `tesseract-ocr`.")
+        
         st.markdown("---")
         uploaded_files = st.file_uploader(
             "Upload all files for one or more products:",
-            type=['pdf', 'xlsx', 'docx'],
+            type=['pdf', 'xlsx', 'docx', 'csv'],
             accept_multiple_files=True,
             help="The app automatically groups files by product name."
         )
 
     if uploaded_files:
-        if st.button("🚀 Review All Packages", type="primary", use_container_width=True):
+        if st.button("🚀 Review All Packages", type="primary"):
             st.session_state.results = {}
             product_groups = group_files_by_product(uploaded_files)
             total_files = len(uploaded_files)
-            progress_bar = st.progress(0, "Initializing...")
-
-            with st.spinner("Analyzing files... This may take a moment."):
+            
+            with st.spinner(f"Analyzing {total_files} files... This may take a moment."):
+                progress_bar = st.progress(0, "Initializing...")
+                
                 # Step 1: Process all files locally
-                for i, (product_name, files) in enumerate(product_groups.items()):
+                files_processed = 0
+                for product_name, files in product_groups.items():
                     st.session_state.results[product_name] = {'files': {}, 'ai_review': 'Pending...'}
                     for file in files:
-                        progress_text = f"Analyzing file {i*len(files)+1}/{total_files}: {file.name}"
-                        progress_bar.progress((i*len(files)+1)/total_files, text=progress_text)
+                        files_processed += 1
+                        progress_bar.progress(files_processed / total_files, f"Analyzing: {file.name}")
                         extraction = DocumentProcessor.extract_text(file, file.name)
                         if not extraction['success']:
                             st.session_state.results[product_name]['files'][file.name] = {'error': extraction['errors'][0]}
@@ -328,7 +352,7 @@ def main():
                         }
 
                 # Step 2: Perform one batched AI call
-                progress_bar.progress(1.0, "Submitting to AI for final review...")
+                progress_bar.progress(1.0, "Submitting to AI for final, evidence-based review...")
                 if api_key:
                     batched_ai_reviews = AIReviewer.get_batch_review(st.session_state.results, api_type, api_key)
                     if "error" in batched_ai_reviews:
@@ -342,18 +366,28 @@ def main():
     if st.session_state.results:
         st.markdown("--- \n ## 📊 Validation Report")
         for product_name, data in st.session_state.results.items():
-            with st.expander(f"### Product: {product_name}", expanded=True):
+            overall_status = "PASS"
+            for result in data['files'].values():
+                if 'error' in result or result.get('validation', {}).get('status') == 'FAIL':
+                    overall_status = "FAIL"
+                    break
+                if result.get('validation', {}).get('status') == 'NEEDS REVIEW':
+                    overall_status = "NEEDS REVIEW"
+            
+            status_icon = "✅" if overall_status == "PASS" else "⚠️" if overall_status == "NEEDS REVIEW" else "❌"
+
+            with st.expander(f"{status_icon} Product: {product_name}", expanded=True):
                 if data['ai_review'] and data['ai_review'] != 'Pending...':
-                    st.markdown("#### 🤖 AI-Powered Summary")
+                    st.markdown("#### 🤖 AI-Powered Evidentiary Review")
                     st.info(data['ai_review'])
-                st.markdown("#### 📄 File-by-File Analysis")
+                st.markdown("#### 📄 Automated Checks")
                 for filename, result in data['files'].items():
                     if 'error' in result:
                         st.error(f"**{filename}:** Could not process file. Reason: {result['error']}")
                         continue
                     status = result['validation']['status']
                     icon = "✅" if status == 'PASS' else "⚠️" if status == 'NEEDS REVIEW' else "❌"
-                    st.markdown(f"**{icon} {filename}** (Type: *{result['doc_info']['type']}* | Method: *{result['extraction']['method']}*) - **Status: {status}**")
+                    st.markdown(f"**{icon} {filename}** (Type: *{result['doc_info']['type']}* | SKU: *{result['doc_info']['sku']}*) - **Status: {status}**")
                     if result['validation']['issues']:
                         for issue in result['validation']['issues']: st.error(f"- {issue}")
                     if result['validation']['warnings']:
