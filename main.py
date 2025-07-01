@@ -121,6 +121,25 @@ class DocumentExtractor:
         except Exception as e:
             logger.error(f"Error extracting from image {filename}: {e}")
             return {'success': False, 'text': '', 'images': [], 'error': str(e)}
+    
+    @staticmethod
+    def extract_from_excel(file_buffer, filename):
+        """Extract text from Excel file"""
+        try:
+            text = ""
+            # Read all sheets
+            excel_file = pd.ExcelFile(file_buffer)
+            
+            for sheet_name in excel_file.sheet_names:
+                df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                text += f"\n\n--- Sheet: {sheet_name} ---\n"
+                text += df.to_string(index=False, header=False)
+            
+            return {'success': True, 'text': text, 'images': []}
+            
+        except Exception as e:
+            logger.error(f"Error extracting from Excel {filename}: {e}")
+            return {'success': False, 'text': '', 'images': [], 'error': str(e)}
 
 class ArtworkValidator:
     """Validates artwork against Vive Health requirements"""
@@ -252,6 +271,38 @@ class ArtworkValidator:
         
         return results
     
+    def validate_qc_sheet(self, text, filename):
+        """Validate QC sheet requirements"""
+        results = []
+        
+        # Check for key QC sheet elements
+        if 'product name' in text.lower() or 'product sku code' in text.lower():
+            results.append(('passed', f'Product information found in {filename}', 'product_info_ok'))
+        else:
+            results.append(('warning', f'Product information may be missing in {filename}', 'product_info_missing'))
+        
+        # Check for specifications
+        if 'print style' in text.lower() or 'paper type' in text.lower() or 'dimensions' in text.lower():
+            results.append(('passed', f'Specifications found in {filename}', 'specs_ok'))
+        else:
+            results.append(('warning', f'Specifications may be incomplete in {filename}', 'specs_incomplete'))
+        
+        # Check for thank you card specs if mentioned
+        if 'thank you card' in text.lower():
+            if '88.9mm' in text or '50.8mm' in text:
+                results.append(('passed', 'Thank you card dimensions correct', 'thankyou_dims_ok'))
+            else:
+                results.append(('warning', 'Thank you card dimensions not standard (should be 88.9mm x 50.8mm)', 'thankyou_dims_nonstandard'))
+        
+        # Check for QR code specs
+        if 'qr code' in text.lower():
+            if '19mm x 19mm' in text:
+                results.append(('passed', 'QR code dimensions correct', 'qr_dims_ok'))
+            else:
+                results.append(('warning', 'QR code dimensions not standard (should be 19mm x 19mm)', 'qr_dims_nonstandard'))
+        
+        return results
+    
     def validate_all(self, documents, product_info):
         """Run all validations and compile results"""
         all_results = []
@@ -271,6 +322,8 @@ class ArtworkValidator:
                 results = self.validate_shipping_mark(text, filename, product_info)
             elif doc_type == 'washtag':
                 results = self.validate_washtag(text, filename)
+            elif doc_type == 'qc_sheet':
+                results = self.validate_qc_sheet(text, filename)
             else:
                 results = [('info', f'{doc_type} uploaded but no specific validation rules', f'{doc_type}_no_rules')]
             
@@ -313,6 +366,8 @@ class DocumentClassifier:
             elif doc_type == 'washtag' and 'machine wash' in text_lower:
                 return doc_type
             elif doc_type == 'manual' and ('quick start guide' in text_lower or 'instructions' in text_lower):
+                return doc_type
+            elif doc_type == 'qc_sheet' and ('product sku code' in text_lower or 'paper type' in text_lower or 'print style' in text_lower):
                 return doc_type
         
         return 'unknown'
@@ -558,10 +613,10 @@ def main():
         st.header("📤 Upload Artwork Files")
         
         uploaded_files = st.file_uploader(
-            "Upload all artwork files (PDFs, images)",
-            type=['pdf', 'png', 'jpg', 'jpeg'],
+            "Upload all artwork files (PDFs, images, Excel files)",
+            type=['pdf', 'png', 'jpg', 'jpeg', 'xlsx', 'xls'],
             accept_multiple_files=True,
-            help="Upload packaging artwork, manuals, shipping marks, washtags, etc."
+            help="Upload packaging artwork, manuals, shipping marks, washtags, QC sheets, etc."
         )
         
         if uploaded_files:
@@ -574,6 +629,8 @@ def main():
                     # Extract content based on file type
                     if file.type == "application/pdf":
                         extraction = DocumentExtractor.extract_from_pdf(file, file.name)
+                    elif file.type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]:
+                        extraction = DocumentExtractor.extract_from_excel(file, file.name)
                     else:
                         extraction = DocumentExtractor.extract_from_image(file, file.name)
                     
