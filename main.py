@@ -1,563 +1,581 @@
 """
-PRODUCTION-READY Packaging Validator for Vive Health
-v4.2 FINAL - The Definitive Edition. Implements a nuanced AI with an interactive
-sign-off checklist and follow-up chat, a fully working and auditable CSV export,
-and a cleaner, more robust workflow.
+Vive Health Artwork Verification System
+A comprehensive Streamlit app for validating packaging artwork against company standards
 """
 
 import streamlit as st
 import re
 import pandas as pd
 import logging
-import shutil
 from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
 import pytesseract
-import docx
+from datetime import datetime
+import json
+from typing import Dict, List, Tuple, Optional
+import base64
 
-# --- Basic Configuration ---
-# Configure logging for production
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Page configuration
-st.set_page_config(page_title="Vive Health Package Reviewer", page_icon="✅", layout="wide")
+st.set_page_config(
+    page_title="Vive Health Artwork Verification", 
+    page_icon="✅", 
+    layout="wide"
+)
 
-# --- Dependency Availability Checks ---
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+# --- Constants and Configuration ---
+SKU_COLOR_MAPPING = {
+    'BLK': 'black',
+    'PUR': 'purple floral',
+    'BGES': 'beige',
+    'S': 'small',
+    'M': 'medium',
+    'L': 'large'
+}
 
-try:
-    import anthropic
-    CLAUDE_AVAILABLE = True
-except ImportError:
-    CLAUDE_AVAILABLE = False
-
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-
-# --- Core Logic Classes ---
-
-class DocumentProcessor:
-    """Handles robust text and image extraction from multiple file types."""
-
-    @staticmethod
-    def extract_media(file, filename):
-        """Routes the file to the correct extraction method based on its type."""
-        file_type = file.type
-        try:
-            if file_type == "application/pdf":
-                return DocumentProcessor._extract_from_pdf(file, filename)
-            elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                text = DocumentProcessor._extract_text_from_word(file, filename)
-                return {'success': True, 'text': text['text'], 'images': [], 'method': 'DOCX-Parser', 'errors': []}
-            elif file_type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"]:
-                text = DocumentProcessor._extract_text_from_excel(file, filename)
-                return {'success': True, 'text': text['text'], 'images': [], 'method': 'Spreadsheet-Parser', 'errors': []}
-            else:
-                error_msg = f"Unsupported file type: {file_type}"
-                logger.warning(error_msg)
-                return {'success': False, 'text': '', 'images': [], 'method': 'Unsupported', 'errors': [error_msg]}
-        except Exception as e:
-            logger.error(f"Fatal error processing file {filename} with type {file_type}: {e}")
-            return {'success': False, 'text': '', 'images': [], 'method': 'Error', 'errors': [f"A critical error occurred: {e}"]}
-
-    @staticmethod
-    def _extract_from_pdf(file_buffer, filename):
-        """Extracts both text (via OCR) and key images from a PDF."""
-        text = ""
-        images = []
-        file_buffer.seek(0)
-        pdf_document = fitz.open(stream=file_buffer.read(), filetype="pdf")
-        for page_num in range(len(pdf_document)):
-            page = pdf_document.load_page(page_num)
-            pix = page.get_pixmap(dpi=200)
-            img_bytes = pix.tobytes("png")
-            image = Image.open(BytesIO(img_bytes))
-            page_text = pytesseract.image_to_string(image, lang='eng')
-            text += f"\n\n--- Page {page_num + 1} ---\n{page_text}"
-            images.append(image)
-        pdf_document.close()
-        logger.info(f"Successfully extracted text and images from PDF {filename}.")
-        return {'success': True, 'text': text, 'images': images, 'method': 'PDF-OCR+Image', 'errors': []}
-
-    @staticmethod
-    def _extract_text_from_word(file_buffer, filename):
-        text = ""
-        doc = docx.Document(file_buffer)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-        return {'text': text}
-
-    @staticmethod
-    def _extract_text_from_excel(file_buffer, filename):
-        text = ""
-        xls = pd.ExcelFile(file_buffer)
-        for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-            text += f"\n\n--- Sheet: {sheet_name} ---\n{df.to_string()}"
-        return {'text': text}
-
-
-class DocumentIdentifier:
-    """Identifies document type based on keywords and content patterns."""
-    TYPE_RULES = {
-        'Requirements Checklist': {'keywords': ['checklist', 'proofreading', 'requirements'], 'content': ['proofreading checklist', 'hcpcs code']},
-        'Packaging Artwork': {'keywords': ['tag', 'lva3100', 'artwork'], 'content': ['california proposition', 'distributed by', r'\(\d{2}\)\d{14}\(\d{3}\)']},
-        'Quick Start Guide': {'keywords': ['quickstart', 'qsg'], 'content': ['quick start guide', 'application instructions', 'warranty information']},
-        'Shipping Mark': {'keywords': ['shipping', 'mark'], 'content': ['item name:', 'po #:', r'[A-Z]{3,4}\d{4,}[A-Z]{0,3}\s*-\s*\d+']},
-        'Washtag': {'keywords': ['washtag'], 'content': ['polyester', 'machine wash', 'do not iron']},
-        'Logo Tag': {'keywords': ['logo'], 'content': []},
+REQUIRED_DOCUMENTS = {
+    'packaging_artwork': {
+        'keywords': ['packaging', 'box', 'package', 'artwork'],
+        'required': True,
+        'description': 'Main product packaging artwork'
+    },
+    'manual': {
+        'keywords': ['manual', 'instructions', 'guide', 'qsg', 'quickstart'],
+        'required': False,
+        'description': 'Product manual or quick start guide'
+    },
+    'washtag': {
+        'keywords': ['washtag', 'wash tag', 'care instructions'],
+        'required': False,
+        'description': 'Washtag with care instructions'
+    },
+    'shipping_mark': {
+        'keywords': ['shipping', 'mark', 'carton'],
+        'required': True,
+        'description': 'Shipping mark with SKU and quantity'
+    },
+    'thank_you_card': {
+        'keywords': ['thank', 'thankyou'],
+        'required': False,  # Only for Vive brand
+        'description': 'Thank you card for Vive brand products'
+    },
+    'qc_sheet': {
+        'keywords': ['qc', 'quality', 'sheet', 'specs'],
+        'required': True,
+        'description': 'QC sheet with specifications'
+    },
+    'made_in_china': {
+        'keywords': ['made_in_china', 'china_sticker'],
+        'required': False,  # Conditional
+        'description': 'Made in China sticker'
     }
+}
 
-    @staticmethod
-    def identify(filename, text):
-        info = {'type': 'Unknown', 'sku': 'N/A', 'product_name': 'N/A'}
-        text_lower = text.lower()
-        filename_lower = filename.lower()
-        for doc_type, rules in DocumentIdentifier.TYPE_RULES.items():
-            if any(k in filename_lower for k in rules['keywords']):
-                info['type'] = doc_type
-                break
-            if rules.get('content') and any(re.search(c, text_lower, re.IGNORECASE) for c in rules['content']):
-                info['type'] = doc_type
-                break
-        sku_match = re.search(r'([A-Z]{3}\d{4,}[A-Z]{0,4})', text.upper())
-        if not sku_match:
-            sku_match = re.search(r'([A-Z]{3}\d{4,}[A-Z]{0,4})', filename.upper())
-        if sku_match:
-            info['sku'] = sku_match.group(1)
-        if info['type'] == 'Shipping Mark':
-            name_match = re.search(r'Item Name:\s*(.*)', text, re.IGNORECASE)
-            if name_match:
-                info['product_name'] = name_match.group(1).strip()
-        elif 'wheelchair bag' in text_lower:
-             info['product_name'] = 'Wheelchair Bag Advanced'
-        return info
-
-class DynamicValidator:
-    """Validates documents against Vive Health's dynamic proofreading checklist."""
-    SKU_SUFFIX_MAP = {'BLK': 'black', 'PUR': 'purple floral', 'BGES': 'beige'}
-
-    @staticmethod
-    def validate(text, doc_info):
-        doc_type = doc_info.get('type', 'Unknown')
-        validator_func = getattr(DynamicValidator, f"_validate_{doc_type.lower().replace(' ', '_')}", DynamicValidator._validate_default)
-        return validator_func(text, doc_info)
-
-    @staticmethod
-    def _determine_status(results):
-        if not results['issues']:
-            results['status'] = 'NEEDS REVIEW' if results['warnings'] else 'PASS'
-        else:
-            results['status'] = 'FAIL'
-        return results
-
-    @staticmethod
-    def _validate_default(text, doc_info):
-        return {'status': 'NEEDS REVIEW', 'issues': [], 'warnings': ['No specific validation rules for this document type.']}
-
-    @staticmethod
-    def _validate_requirements_checklist(text, doc_info):
-        return {'status': 'PASS', 'issues': [], 'warnings': ['This is a reference document for AI review.']}
-
-    @staticmethod
-    def _validate_packaging_artwork(text, doc_info):
-        results = {'issues': [], 'warnings': []}
-        text_lower = text.lower()
-        if 'made in china' not in text_lower and 'made in taiwan' not in text_lower:
-            results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
-        sku = doc_info.get('sku', 'N/A')
-        for suffix, color in DynamicValidator.SKU_SUFFIX_MAP.items():
-            if sku.upper().endswith(suffix) and color not in text_lower:
-                results['issues'].append(f"SKU/Color Mismatch: SKU is '{sku}' but the color '{color}' was not found.")
-                break
-        if not re.search(r'\(\s*01\s*\)\s*\d{14}', text):
-            results['warnings'].append("UDI format may be missing or incorrect. Expected format: (01)xxxxxxxxxxxxxx.")
-        return DynamicValidator._determine_status(results)
-
-    @staticmethod
-    def _validate_shipping_mark(text, doc_info):
-        results = {'issues': [], 'warnings': []}
-        if 'made in china' not in text.lower() and 'made in taiwan' not in text.lower():
-            results['issues'].append('Missing Country of Origin (e.g., "Made in China").')
-        if not re.search(r'([A-Z]{3}\d{4,}[A-Z]{0,4})\s*-\s*(\d+)', text.upper()):
-            results['issues'].append("Shipping Mark format error: Expected 'SKU - QTY'.")
-        return DynamicValidator._determine_status(results)
-
-class AIReviewer:
-    """Handles interaction with AI models for advanced analysis."""
-
-    @staticmethod
-    def get_available_models():
-        models = []
-        if hasattr(st, 'secrets'):
-            if st.secrets.get("ANTHROPIC_API_KEY"):
-                models.append("Anthropic Claude 3.5 Sonnet")
-            if st.secrets.get("OPENAI_API_KEY"):
-                models.append("OpenAI GPT-4o")
-            if st.secrets.get("GOOGLE_API_KEY"):
-                models.append("Google Gemini 1.5 Pro (Visual Analysis)")
-        return models
-
-    @staticmethod
-    def get_review(all_products_data, custom_instructions, model_choice, api_keys, chat_history=None):
-        if not model_choice: return {"error": "No AI model selected or configured."}
-        
-        # Build the initial prompt for the first turn
-        if not chat_history:
-            initial_prompt = f"""
-            You are a senior Graphic Design Manager at Vive Health. Your task is to provide an expert-level review of product packaging documents. Your tone should be collaborative and helpful.
-
-            **CRITICAL CUSTOM INSTRUCTIONS FOR THIS SESSION:**
-            ---
-            {custom_instructions if custom_instructions else "No custom instructions provided. Standard review procedures apply."}
-            ---
-            You MUST treat these custom instructions as a direct order from the project lead and apply them globally to all product groups in this batch.
-
-            Begin your entire response with a single "Session Configuration" block that restates these custom instructions to confirm you have understood them.
-
-            Then, for each product group below, provide a structured review:
-            1.  **Product Title:** `### Product: [Product Name]`
-            2.  **Manager's Overview:** A high-level paragraph on your overall impression.
-            3.  **Actionable Findings:**
-                - For each issue, you MUST classify it as either a "Critical Error" or a "Suggestion for Improvement".
-                - A **Critical Error** is a definite mistake (e.g., typo, wrong SKU, direct contradiction).
-                - A **Suggestion for Improvement** is a non-critical issue that requires human review (e.g., layout suggestion, minor wording change).
-                - Present each finding using the "Claim, Evidence, Reasoning" format.
-                - **Claim:** Start with the classification (e.g., `Critical Error: SKU Mismatch`).
-                - **Evidence:** Quote the exact text or describe the visual element, and name the source file.
-                - **Reasoning:** Explain why it's a problem.
-            4.  **Final Recommendation:** Conclude with "Approved for Production" or "Needs Correction" and a clear justification.
-            5.  **Repeat** this structured process for every product group.
-            """
-            
-            # Build the full context for the initial review
-            full_context = [initial_prompt]
-            text_content_for_all = ""
-            for product_name, data in all_products_data.items():
-                text_content_for_all += f"\n\n--- Start of Product Group: {product_name} ---\n"
-                for filename, file_data in data.get('files', {}).items():
-                     if file_data.get('extraction', {}).get('success'):
-                        text_content_for_all += f"File: {filename}\nText Content:\n{file_data['extraction']['text'][:2500]}"
-            full_context.append(text_content_for_all)
-            
-            # This is the content that will be sent to the model
-            model_payload = [{"role": "user", "content": " ".join(str(item) for item in full_context if isinstance(item, str))}]
-            st.session_state.full_context_for_chat = model_payload # Store for follow-ups
-
-        else: # This is a follow-up question
-            model_payload = chat_history
-
-        try:
-            response_text = ""
-            if "Claude" in model_choice and CLAUDE_AVAILABLE:
-                client = anthropic.Anthropic(api_key=api_keys['anthropic'], max_retries=3)
-                response = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.2, messages=model_payload)
-                response_text = response.content[0].text
-            elif "GPT" in model_choice and OPENAI_AVAILABLE:
-                client = openai.OpenAI(api_key=api_keys['openai'])
-                response = client.chat.completions.create(model="gpt-4o", max_tokens=4096, temperature=0.2, messages=model_payload)
-                response_text = response.choices[0].message.content
-            elif "Gemini" in model_choice and GEMINI_AVAILABLE:
-                # This part would need to be enhanced to handle multimodal chat history correctly
-                genai.configure(api_key=api_keys['google'])
-                model = genai.GenerativeModel('gemini-1.5-pro-latest')
-                # Simplified chat for Gemini, sending only the latest prompt
-                response = model.generate_content(model_payload[-1]['content'])
-                response_text = response.text
-            else:
-                return {"error": "Selected AI model is not available or configured correctly."}
-
-            if not chat_history: # This was an initial review, so parse it
-                ai_reviews = {}
-                product_sections = re.split(r'###\s*Product:\s*(.*)', response_text)
-                if len(product_sections) > 1:
-                    session_config = product_sections[0]
-                    ai_reviews['session_config'] = session_config
-                    for i in range(1, len(product_sections), 2):
-                        product_name_from_ai = product_sections[i].strip()
-                        product_review = product_sections[i+1].strip()
-                        for original_product_name in all_products_data.keys():
-                            if product_name_from_ai.lower().replace(" ", "") in original_product_name.lower().replace(" ", ""):
-                                ai_reviews[original_product_name] = f"### {product_name_from_ai}\n\n{product_review}"
-                                break
-                else:
-                    ai_reviews['batch_summary'] = response_text
-                return ai_reviews
-            else: # This was a follow-up, just return the text
-                return response_text
-
-        except Exception as e:
-            logger.error(f"AI review failed with model {model_choice}: {e}")
-            return {"error": f"An error occurred during AI batch review: {e}"}
-
-# --- Helper Functions & UI ---
-
-def group_files_by_product(uploaded_files):
-    """Groups files based on a common prefix in their names."""
-    groups = {}
-    for file in uploaded_files:
-        match = re.match(r'([a-zA-Z_]+(?:bag|guide|mark|tag|checklist))', file.name.lower())
-        if match:
-             base_name = re.sub(r'_(?:bag|guide|mark|tag|checklist)$', '', match.group(1)).replace('_', ' ').title().strip()
-        else:
-             base_name = "Uncategorized"
-        if base_name not in groups:
-            groups[base_name] = []
-        groups[base_name].append(file)
-    return groups
-
-def prepare_report_data_for_export(results):
-    """Converts the nested results dictionary to a flat, auditable list for DataFrame creation."""
-    report_rows = []
-    custom_instructions = st.session_state.get('run_custom_instructions', 'N/A')
+# --- Helper Classes ---
+class DocumentExtractor:
+    """Handles text and image extraction from various file types"""
     
-    for product_name, data in results.items():
-        ai_review = data.get('ai_review', 'N/A')
-        product_findings = st.session_state.get(f"findings_{product_name}", {})
-        claims = re.findall(r"\*\*Claim:\*\*(.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", ai_review, re.DOTALL)
-        if claims:
-            for i, claim_block in enumerate(claims):
-                claim_text = claim_block.split('**Evidence:**')[0].strip()
-                evidence_text = claim_block.split('**Evidence:**')[1].split('**Reasoning:**')[0].strip()
-                finding_state = product_findings.get('states', {}).get(i, {})
-                row = {
-                    'Product': product_name, 'Finding Type': 'AI Discrepancy', 'Details': claim_text,
-                    'Evidence': evidence_text, 'User Decision': finding_state.get('decision', 'Pending Review'),
-                    'User Notes': finding_state.get('notes', ''), 'Custom Instructions for Run': custom_instructions
-                }
-                report_rows.append(row)
-        else:
-            row = {
-                'Product': product_name, 'Finding Type': 'AI Review', 'Details': 'No discrepancies found by AI.',
-                'Evidence': 'N/A', 'User Decision': 'N/A', 'User Notes': 'N/A',
-                'Custom Instructions for Run': custom_instructions
-            }
-            report_rows.append(row)
-        for filename, result in data['files'].items():
-            if result.get('validation', {}).get('issues'):
-                for issue in result['validation']['issues']:
-                    report_rows.append({
-                        'Product': product_name, 'Finding Type': f'Automated Check ({filename})', 'Details': issue,
-                        'Evidence': 'N/A', 'User Decision': 'N/A', 'User Notes': 'N/A',
-                        'Custom Instructions for Run': custom_instructions
-                    })
-    return report_rows
+    @staticmethod
+    def extract_from_pdf(file_buffer, filename):
+        """Extract text and images from PDF using OCR"""
+        try:
+            text = ""
+            images = []
+            file_buffer.seek(0)
+            pdf_document = fitz.open(stream=file_buffer.read(), filetype="pdf")
+            
+            for page_num in range(len(pdf_document)):
+                page = pdf_document.load_page(page_num)
+                
+                # First try to extract text directly
+                page_text = page.get_text()
+                
+                # If no text found, use OCR
+                if not page_text.strip():
+                    pix = page.get_pixmap(dpi=200)
+                    img_bytes = pix.tobytes("png")
+                    image = Image.open(BytesIO(img_bytes))
+                    page_text = pytesseract.image_to_string(image, lang='eng')
+                    images.append(image)
+                
+                text += f"\n\n--- Page {page_num + 1} ---\n{page_text}"
+            
+            pdf_document.close()
+            return {'success': True, 'text': text, 'images': images}
+            
+        except Exception as e:
+            logger.error(f"Error extracting from PDF {filename}: {e}")
+            return {'success': False, 'text': '', 'images': [], 'error': str(e)}
+    
+    @staticmethod
+    def extract_from_image(file_buffer, filename):
+        """Extract text from image using OCR"""
+        try:
+            image = Image.open(file_buffer)
+            text = pytesseract.image_to_string(image, lang='eng')
+            return {'success': True, 'text': text, 'images': [image]}
+        except Exception as e:
+            logger.error(f"Error extracting from image {filename}: {e}")
+            return {'success': False, 'text': '', 'images': [], 'error': str(e)}
 
-def render_interactive_ai_review(review_text, product_name):
-    """Parses the AI review and renders it with interactive sign-off widgets."""
-    if not review_text: return True
-    claims = re.findall(r"(\*\*Claim:\*\*.+?)(?=\*\*Claim:\*\*|\*\*Recommendation:\*\*|\Z)", review_text, re.DOTALL)
-    if f"findings_{product_name}" not in st.session_state:
-        st.session_state[f"findings_{product_name}"] = {
-            "total": len(claims), "states": {i: {"decision": "Pending Review", "notes": ""} for i in range(len(claims))}
+class ArtworkValidator:
+    """Validates artwork against Vive Health requirements"""
+    
+    def __init__(self):
+        self.validation_results = {
+            'passed': [],
+            'failed': [],
+            'warnings': [],
+            'info': []
         }
-    product_state = st.session_state[f"findings_{product_name}"]
-    st.info(review_text.split("**Claim:**")[0])
-    if not claims:
-        recommendation = review_text.split("**Recommendation:**")[-1]
-        st.markdown(f"**Recommendation:** {recommendation}")
-        return True
-    for i, claim_block in enumerate(claims):
-        with st.container(border=True):
-            claim_text_full = claim_block.split('**Evidence:**')[0].replace('**Claim:**','').strip()
-            claim_icon = "❌" if "Critical Error" in claim_text_full else "⚠️"
-            st.markdown(f"**Claim:** {claim_icon} {claim_text_full}")
-            st.markdown(f"**Evidence:**{claim_block.split('**Evidence:**')[1].split('**Reasoning:**')[0].strip()}")
-            st.markdown(f"**Reasoning:**{claim_block.split('**Reasoning:**')[1].strip()}")
-            st.markdown("---")
-            cols = st.columns([2, 3])
-            decision_key = f"decision_{product_name}_{i}"
-            notes_key = f"notes_{product_name}_{i}"
-            with cols[0]:
-                product_state["states"][i]["decision"] = st.radio(
-                    "Your Action:", options=["Pending Review", "Tool is Correct - Correction Made", "Tool is Incorrect - Ignore Finding"],
-                    key=decision_key, index=["Pending Review", "Tool is Correct - Correction Made", "Tool is Incorrect - Ignore Finding"].index(product_state["states"][i]["decision"]),
-                    label_visibility="collapsed"
-                )
-            with cols[1]:
-                product_state["states"][i]["notes"] = st.text_input(
-                    "Notes (optional):", key=notes_key, value=product_state["states"][i]["notes"],
-                    placeholder="e.g., 'Updated artwork and sent to printer.'"
-                )
-    recommendation = review_text.split("**Recommendation:**")[-1]
-    st.markdown(f"**Recommendation:** {recommendation}")
-    reviewed_count = sum(1 for state in product_state["states"].values() if state["decision"] != "Pending Review")
-    if reviewed_count == product_state["total"]:
-        if product_state["total"] > 0:
-            st.success("✅ Well done! All findings for this product have been reviewed.")
-        return True
-    return False
+    
+    def validate_packaging_artwork(self, text, filename, product_info):
+        """Validate main packaging artwork requirements"""
+        results = []
+        
+        # Check for consistent product name
+        if product_info.get('product_name'):
+            name_count = text.lower().count(product_info['product_name'].lower())
+            if name_count == 0:
+                results.append(('failed', f'Product name "{product_info["product_name"]}" not found in {filename}'))
+            elif name_count == 1:
+                results.append(('warning', f'Product name appears only once in {filename}, verify consistency'))
+            else:
+                results.append(('passed', f'Product name consistent in {filename}'))
+        
+        # Check for Made in China
+        if 'made in china' not in text.lower() and 'made in taiwan' not in text.lower():
+            results.append(('failed', f'Missing country of origin in {filename}'))
+        else:
+            results.append(('passed', f'Country of origin present in {filename}'))
+        
+        # Check SKU and color matching
+        if product_info.get('sku'):
+            sku = product_info['sku']
+            if sku in text:
+                results.append(('passed', f'SKU {sku} found in {filename}'))
+                
+                # Check color suffix matching
+                for suffix, color in SKU_COLOR_MAPPING.items():
+                    if sku.upper().endswith(suffix) and color not in text.lower():
+                        results.append(('failed', f'SKU indicates {color} but color not mentioned in {filename}'))
+                        break
+            else:
+                results.append(('failed', f'SKU {sku} not found in {filename}'))
+        
+        # Check for UPC/UDI
+        upc_pattern = r'\b\d{12,14}\b'
+        udi_pattern = r'\(01\)\s*\d{14}'
+        
+        if re.search(upc_pattern, text):
+            results.append(('passed', 'UPC barcode found'))
+        else:
+            results.append(('warning', 'UPC barcode not detected (may need manual verification)'))
+            
+        if re.search(udi_pattern, text):
+            results.append(('passed', 'UDI format found'))
+        else:
+            results.append(('info', 'UDI not found (only required if specified in R&D)'))
+        
+        # Check for California Prop 65 warning
+        if 'warning' in text.lower() and 'california' in text.lower():
+            results.append(('passed', 'California Prop 65 warning found'))
+        else:
+            results.append(('info', 'No Prop 65 warning found (only required if specified in R&D)'))
+        
+        return results
+    
+    def validate_manual(self, text, filename):
+        """Validate manual/quick start guide"""
+        results = []
+        
+        # Basic spell check indicators (common misspellings)
+        common_errors = ['recieve', 'occured', 'seperate', 'definately', 'accomodate']
+        found_errors = [error for error in common_errors if error in text.lower()]
+        
+        if found_errors:
+            results.append(('failed', f'Potential spelling errors in {filename}: {", ".join(found_errors)}'))
+        else:
+            results.append(('passed', f'No common spelling errors detected in {filename}'))
+        
+        return results
+    
+    def validate_shipping_mark(self, text, filename, product_info):
+        """Validate shipping mark requirements"""
+        results = []
+        
+        # Check format SKU - QTY
+        sku_qty_pattern = r'([A-Z]{3}\d{4}[A-Z]{0,4})\s*[-–]\s*(\d+)'
+        match = re.search(sku_qty_pattern, text.upper())
+        
+        if match:
+            results.append(('passed', f'Shipping mark format correct: {match.group(0)}'))
+        else:
+            results.append(('failed', f'Shipping mark format incorrect in {filename}. Expected: SKU - QTY'))
+        
+        # Check for Made in China
+        if 'made in china' not in text.lower():
+            results.append(('warning', f'Made in China not found in shipping mark {filename}'))
+        else:
+            results.append(('passed', f'Made in China present in shipping mark'))
+        
+        return results
+    
+    def validate_washtag(self, text, filename):
+        """Validate washtag requirements"""
+        results = []
+        
+        # Check for care instructions
+        care_keywords = ['machine wash', 'wash cold', 'air dry', 'do not bleach', 'do not iron']
+        found_keywords = [kw for kw in care_keywords if kw in text.lower()]
+        
+        if len(found_keywords) >= 3:
+            results.append(('passed', f'Care instructions found in {filename}'))
+        else:
+            results.append(('warning', f'Limited care instructions in {filename}. Found: {", ".join(found_keywords)}'))
+        
+        # Check for Made in China
+        if 'made in china' in text.lower():
+            results.append(('passed', 'Made in China present on washtag'))
+        else:
+            results.append(('failed', 'Made in China missing from washtag'))
+        
+        # Check for material composition
+        if '%' in text and any(word in text.lower() for word in ['polyester', 'cotton', 'pvc', 'ldpe']):
+            results.append(('passed', 'Material composition found'))
+        else:
+            results.append(('warning', 'Material composition may be missing'))
+        
+        return results
+    
+    def validate_all(self, documents, product_info):
+        """Run all validations and compile results"""
+        all_results = []
+        
+        for doc_type, doc_data in documents.items():
+            if not doc_data:
+                continue
+                
+            text = doc_data.get('text', '')
+            filename = doc_data.get('filename', '')
+            
+            if doc_type == 'packaging_artwork':
+                results = self.validate_packaging_artwork(text, filename, product_info)
+            elif doc_type == 'manual':
+                results = self.validate_manual(text, filename)
+            elif doc_type == 'shipping_mark':
+                results = self.validate_shipping_mark(text, filename, product_info)
+            elif doc_type == 'washtag':
+                results = self.validate_washtag(text, filename)
+            else:
+                results = [('info', f'{doc_type} uploaded but no specific validation rules')]
+            
+            all_results.extend(results)
+        
+        # Check for required documents
+        if product_info.get('brand', '').lower() == 'vive' and 'thank_you_card' not in documents:
+            all_results.append(('failed', 'Thank you card required for Vive brand products but not found'))
+        
+        # Check Made in China sticker requirement
+        has_washtag = 'washtag' in documents
+        has_rating_label = any('rating' in doc.get('text', '').lower() for doc in documents.values() if doc)
+        
+        if not has_washtag and not has_rating_label and 'made_in_china' not in documents:
+            all_results.append(('warning', 'Made in China sticker may be required (no washtag or rating label found)'))
+        
+        return all_results
 
-def main():
-    """Main function to run the Streamlit application."""
+class DocumentClassifier:
+    """Classifies uploaded documents by type"""
+    
+    @staticmethod
+    def classify_document(filename, text):
+        """Determine document type based on filename and content"""
+        filename_lower = filename.lower()
+        text_lower = text.lower()
+        
+        for doc_type, config in REQUIRED_DOCUMENTS.items():
+            # Check filename
+            if any(keyword in filename_lower for keyword in config['keywords']):
+                return doc_type
+            
+            # Check content
+            if doc_type == 'packaging_artwork' and 'distributed by' in text_lower:
+                return doc_type
+            elif doc_type == 'shipping_mark' and 'item name:' in text_lower and 'po #:' in text_lower:
+                return doc_type
+            elif doc_type == 'washtag' and 'machine wash' in text_lower:
+                return doc_type
+            elif doc_type == 'manual' and ('quick start guide' in text_lower or 'instructions' in text_lower):
+                return doc_type
+        
+        return 'unknown'
+
+# --- UI Functions ---
+def display_header():
+    """Display app header with styling"""
     st.markdown("""
     <style>
-        .main-header { padding: 1.5rem 1rem; margin-bottom: 2rem; background: #f0f2f6; border-radius: 10px; text-align: center; }
-        .st-emotion-cache-1y4p8pa { padding-top: 1rem; }
-        .stButton>button { width: 100%; }
+        .main-header {
+            padding: 2rem;
+            background: linear-gradient(135deg, #0e7490 0%, #0891b2 100%);
+            border-radius: 10px;
+            text-align: center;
+            margin-bottom: 2rem;
+            color: white;
+        }
+        .stButton>button {
+            background-color: #0891b2;
+            color: white;
+        }
+        .success-box {
+            padding: 1rem;
+            background-color: #d1fae5;
+            border-left: 4px solid #10b981;
+            margin: 0.5rem 0;
+        }
+        .error-box {
+            padding: 1rem;
+            background-color: #fee2e2;
+            border-left: 4px solid #ef4444;
+            margin: 0.5rem 0;
+        }
+        .warning-box {
+            padding: 1rem;
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            margin: 0.5rem 0;
+        }
+        .info-box {
+            padding: 1rem;
+            background-color: #dbeafe;
+            border-left: 4px solid #3b82f6;
+            margin: 0.5rem 0;
+        }
     </style>
     <div class="main-header">
-        <h1>✅ Vive Health Package Reviewer</h1>
-        <p>Your expert AI design manager for packaging and artwork proofreading.</p>
+        <h1>✅ Vive Health Artwork Verification System</h1>
+        <p>Automated validation against packaging standards and requirements</p>
     </div>
     """, unsafe_allow_html=True)
 
-    if 'results' not in st.session_state:
-        st.session_state.results = {}
-    if 'run_custom_instructions' not in st.session_state:
-        st.session_state.run_custom_instructions = ""
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
+def display_validation_result(status, message):
+    """Display validation result with appropriate styling"""
+    if status == 'passed':
+        st.markdown(f'<div class="success-box">✅ {message}</div>', unsafe_allow_html=True)
+    elif status == 'failed':
+        st.markdown(f'<div class="error-box">❌ {message}</div>', unsafe_allow_html=True)
+    elif status == 'warning':
+        st.markdown(f'<div class="warning-box">⚠️ {message}</div>', unsafe_allow_html=True)
+    else:  # info
+        st.markdown(f'<div class="info-box">ℹ️ {message}</div>', unsafe_allow_html=True)
+
+def generate_report(validation_results, documents, product_info):
+    """Generate a comprehensive validation report"""
+    report = {
+        'timestamp': datetime.now().isoformat(),
+        'product_info': product_info,
+        'documents_reviewed': list(documents.keys()),
+        'validation_summary': {
+            'total_checks': len(validation_results),
+            'passed': len([r for r in validation_results if r[0] == 'passed']),
+            'failed': len([r for r in validation_results if r[0] == 'failed']),
+            'warnings': len([r for r in validation_results if r[0] == 'warning']),
+            'info': len([r for r in validation_results if r[0] == 'info'])
+        },
+        'detailed_results': validation_results
+    }
     
+    return report
+
+def export_report_to_csv(report):
+    """Convert report to CSV format"""
+    rows = []
+    for result in report['detailed_results']:
+        rows.append({
+            'Status': result[0].upper(),
+            'Message': result[1],
+            'Product': report['product_info'].get('product_name', 'Unknown'),
+            'SKU': report['product_info'].get('sku', 'Unknown'),
+            'Timestamp': report['timestamp']
+        })
+    
+    df = pd.DataFrame(rows)
+    return df.to_csv(index=False)
+
+# --- Main Application ---
+def main():
+    if 'validation_complete' not in st.session_state:
+        st.session_state.validation_complete = False
+    if 'documents' not in st.session_state:
+        st.session_state.documents = {}
+    if 'validation_results' not in st.session_state:
+        st.session_state.validation_results = []
+    
+    display_header()
+    
+    # Sidebar for product information
     with st.sidebar:
-        st.markdown("### ⚙️ AI Configuration")
-        available_models = AIReviewer.get_available_models()
-        if not available_models:
-            st.warning("No AI models configured. Please add an API key to your Streamlit secrets to enable AI review.")
-            model_choice = None
-        else:
-            model_choice = st.selectbox("Choose AI Model:", available_models, help="Gemini is recommended for visual analysis.")
+        st.header("📋 Product Information")
         
-        st.markdown("### 📝 Custom Instructions for this Session")
-        custom_instructions = st.text_area(
-            "Add special rules for this review. For example: 'For this batch, all products are made in Taiwan.'",
-            height=150, key="custom_instructions"
-        )
+        product_info = {}
+        product_info['product_name'] = st.text_input("Product Name", placeholder="e.g., Wheelchair Bag Advanced")
+        product_info['sku'] = st.text_input("SKU", placeholder="e.g., LVA3100BLK")
+        product_info['brand'] = st.selectbox("Brand", ["Vive", "Other"])
+        
         st.markdown("---")
+        st.header("📚 Reference Documents")
+        st.info("Upload your R&D document or paste the link for reference")
+        rd_link = st.text_input("R&D Document Link", placeholder="Google Docs link")
+        
+        if st.button("Clear All", type="secondary"):
+            st.session_state.documents = {}
+            st.session_state.validation_complete = False
+            st.session_state.validation_results = []
+            st.rerun()
+    
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.header("📤 Upload Artwork Files")
+        
         uploaded_files = st.file_uploader(
-            "Upload all files for one or more products:",
-            type=['pdf', 'xlsx', 'docx', 'csv'], accept_multiple_files=True,
-            help="The app automatically groups files by product name."
+            "Upload all artwork files (PDFs, images)",
+            type=['pdf', 'png', 'jpg', 'jpeg'],
+            accept_multiple_files=True,
+            help="Upload packaging artwork, manuals, shipping marks, washtags, etc."
         )
-
-    if uploaded_files:
-        if st.button("🚀 Review All Packages", type="primary", disabled=(not available_models)):
-            st.session_state.clear()
-            st.session_state.results = {}
-            st.session_state.run_custom_instructions = custom_instructions
-            st.session_state.chat_history = []
-            product_groups = group_files_by_product(uploaded_files)
-            total_files = len(uploaded_files)
-            
-            with st.spinner(f"Analyzing {total_files} files... This may take a moment."):
-                progress_bar = st.progress(0, "Initializing...")
-                files_processed = 0
-                for product_name, files in product_groups.items():
-                    st.session_state.results[product_name] = {'files': {}, 'ai_review': 'Pending...'}
-                    for file in files:
-                        files_processed += 1
-                        progress_bar.progress(files_processed / total_files, f"Analyzing: {file.name}")
-                        extraction = DocumentProcessor.extract_media(file, file.name)
-                        if not extraction['success']:
-                            st.session_state.results[product_name]['files'][file.name] = {'error': extraction['errors'][0]}
-                            continue
-                        doc_info = DocumentIdentifier.identify(file.name, extraction['text'])
-                        validation = DynamicValidator.validate(extraction['text'], doc_info)
-                        st.session_state.results[product_name]['files'][file.name] = {
-                            'extraction': extraction, 'doc_info': doc_info, 'validation': validation
-                        }
-                progress_bar.progress(1.0, "Submitting to AI for final, evidence-based review...")
-                api_keys = {
-                    'anthropic': st.secrets.get("ANTHROPIC_API_KEY"),
-                    'openai': st.secrets.get("OPENAI_API_KEY"),
-                    'google': st.secrets.get("GOOGLE_API_KEY")
-                }
-                initial_review = AIReviewer.get_review(st.session_state.results, st.session_state.run_custom_instructions, model_choice, api_keys)
+        
+        if uploaded_files:
+            with st.spinner("Processing files..."):
+                progress_bar = st.progress(0)
                 
-                if "error" in initial_review:
-                    st.error(f"AI review failed: {initial_review['error']}")
-                else:
-                    st.session_state.global_ai_config = initial_review.pop('session_config', None)
-                    for product_name, review in initial_review.items():
-                        if product_name in st.session_state.results:
-                            st.session_state.results[product_name]['ai_review'] = review
-                    # Prime the chat history
-                    st.session_state.chat_history.append({"role": "user", "content": st.session_state.full_context_for_chat})
-                    st.session_state.chat_history.append({"role": "assistant", "content": str(initial_review)})
+                for idx, file in enumerate(uploaded_files):
+                    progress_bar.progress((idx + 1) / len(uploaded_files))
+                    
+                    # Extract content based on file type
+                    if file.type == "application/pdf":
+                        extraction = DocumentExtractor.extract_from_pdf(file, file.name)
+                    else:
+                        extraction = DocumentExtractor.extract_from_image(file, file.name)
+                    
+                    if extraction['success']:
+                        # Classify document
+                        doc_type = DocumentClassifier.classify_document(file.name, extraction['text'])
+                        
+                        # Store document
+                        st.session_state.documents[doc_type] = {
+                            'filename': file.name,
+                            'text': extraction['text'],
+                            'images': extraction.get('images', []),
+                            'type': doc_type
+                        }
+                
                 progress_bar.empty()
-
-    if st.session_state.results:
-        st.markdown("--- \n ## 📊 Validation Report")
+                st.success(f"✅ Processed {len(uploaded_files)} files")
+    
+    with col2:
+        st.header("📊 Document Status")
         
-        if st.session_state.get('global_ai_config'):
-            with st.container(border=True):
-                st.markdown("#### 📝 AI Session Configuration")
-                st.markdown(st.session_state.global_ai_config)
-
-        all_findings_reviewed = True
-        for product_name, data in st.session_state.results.items():
-            with st.expander(f"Product: {product_name}", expanded=True):
-                if data.get('ai_review') and data['ai_review'] != 'Pending...':
-                    st.markdown("#### 🤖 AI Design Manager Review")
-                    is_complete = render_interactive_ai_review(data['ai_review'], product_name)
-                    if not is_complete:
-                        all_findings_reviewed = False
-                st.markdown("---")
-                st.markdown("#### 📄 Automated Checks")
-                for filename, result in data['files'].items():
-                    if 'error' in result:
-                        st.error(f"**{filename}:** Could not process file. Reason: {result['error']}")
-                        continue
-                    status = result['validation']['status']
-                    icon = "✅" if status == 'PASS' else "⚠️" if status == 'NEEDS REVIEW' else "❌"
-                    st.markdown(f"**{icon} {filename}** (Type: *{result['doc_info']['type']}* | SKU: *{result['doc_info']['sku']}*) - **Status: {status}**")
-                    if result['validation']['issues']:
-                        for issue in result['validation']['issues']: st.error(f"- {issue}")
-                    if result['validation']['warnings']:
-                        for warning in result['validation']['warnings']: st.warning(f"- {warning}")
-                    if status == 'PASS' and not result['validation']['warnings']:
-                        st.success("- All automated checks passed.")
+        # Show which documents have been uploaded
+        for doc_type, config in REQUIRED_DOCUMENTS.items():
+            if doc_type in st.session_state.documents:
+                st.success(f"✅ {config['description']}")
+            elif config['required']:
+                st.error(f"❌ {config['description']} (Required)")
+            else:
+                st.info(f"➖ {config['description']} (Optional)")
+    
+    # Validation section
+    st.markdown("---")
+    
+    if st.button("🔍 Run Validation", type="primary", disabled=not uploaded_files):
+        with st.spinner("Validating artwork..."):
+            validator = ArtworkValidator()
+            validation_results = validator.validate_all(st.session_state.documents, product_info)
+            st.session_state.validation_results = validation_results
+            st.session_state.validation_complete = True
+    
+    # Display results
+    if st.session_state.validation_complete:
+        st.header("📋 Validation Results")
         
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        passed = len([r for r in st.session_state.validation_results if r[0] == 'passed'])
+        failed = len([r for r in st.session_state.validation_results if r[0] == 'failed'])
+        warnings = len([r for r in st.session_state.validation_results if r[0] == 'warning'])
+        info = len([r for r in st.session_state.validation_results if r[0] == 'info'])
+        
+        with col1:
+            st.metric("Passed", passed, delta=None, delta_color="off")
+        with col2:
+            st.metric("Failed", failed, delta=None, delta_color="off")
+        with col3:
+            st.metric("Warnings", warnings, delta=None, delta_color="off")
+        with col4:
+            st.metric("Info", info, delta=None, delta_color="off")
+        
+        # Detailed results
         st.markdown("---")
-        st.markdown("### 💬 Follow-up Analysis")
         
-        # Display chat history
-        for message in st.session_state.get('chat_history', []):
-            if message['role'] == 'user' and message.get('content') != st.session_state.get('full_context_for_chat'):
-                with st.chat_message("user"):
-                    st.markdown(message['content'])
-            elif message['role'] == 'assistant' and str(message.get('content')) != str(st.session_state.results):
-                 with st.chat_message("assistant"):
-                    st.markdown(message['content'])
-
-        if prompt := st.chat_input("Ask a follow-up question about the review..."):
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.spinner("Thinking..."):
-                api_keys = {
-                    'anthropic': st.secrets.get("ANTHROPIC_API_KEY"),
-                    'openai': st.secrets.get("OPENAI_API_KEY"),
-                    'google': st.secrets.get("GOOGLE_API_KEY")
-                }
-                follow_up_response = AIReviewer.get_review(None, None, model_choice, api_keys, chat_history=st.session_state.chat_history)
-                with st.chat_message("assistant"):
-                    st.markdown(follow_up_response)
-                st.session_state.chat_history.append({"role": "assistant", "content": follow_up_response})
-
+        # Group results by status
+        for status in ['failed', 'warning', 'passed', 'info']:
+            results = [r for r in st.session_state.validation_results if r[0] == status]
+            if results:
+                st.subheader(f"{status.title()} Items")
+                for _, message in results:
+                    display_validation_result(status, message)
+        
+        # Export options
         st.markdown("---")
-        st.markdown("### 📥 Finalize & Export")
-        if all_findings_reviewed:
-            st.success("All AI findings have been reviewed. You can now generate the final audit log.")
-            report_df = pd.DataFrame(prepare_report_data_for_export(st.session_state.results))
-            csv = report_df.to_csv(index=False).encode('utf-8')
+        st.header("📥 Export Report")
+        
+        report = generate_report(st.session_state.validation_results, st.session_state.documents, product_info)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv_data = export_report_to_csv(report)
             st.download_button(
-                label="Download Final Audit Log (CSV)", data=csv,
-                file_name="vive_health_audit_log.csv", mime="text/csv"
+                label="Download CSV Report",
+                data=csv_data,
+                file_name=f"artwork_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
             )
-        else:
-            st.warning("Please review and sign off on all AI findings above before exporting the final report.")
-
+        
+        with col2:
+            json_data = json.dumps(report, indent=2)
+            st.download_button(
+                label="Download JSON Report",
+                data=json_data,
+                file_name=f"artwork_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+    
+    # Document preview section
+    if st.session_state.documents:
+        st.markdown("---")
+        st.header("📄 Document Preview")
+        
+        doc_type = st.selectbox("Select document to preview", list(st.session_state.documents.keys()))
+        
+        if doc_type in st.session_state.documents:
+            doc = st.session_state.documents[doc_type]
+            
+            with st.expander(f"View {doc['filename']}", expanded=True):
+                st.text_area("Extracted Text", doc['text'], height=300)
+                
+                if doc.get('images'):
+                    st.subheader("Images")
+                    for idx, img in enumerate(doc['images']):
+                        st.image(img, caption=f"Page {idx + 1}", use_container_width=True)
 
 if __name__ == "__main__":
     main()
