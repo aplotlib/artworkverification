@@ -759,7 +759,7 @@ def main():
                 data=csv_data,
                 file_name=f"artwork_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                disabled=not all_reviewed and issues
+                disabled=(not all_reviewed and len(issues) > 0)
             )
         
         with col2:
@@ -769,7 +769,7 @@ def main():
                 data=json_data,
                 file_name=f"artwork_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 mime="application/json",
-                disabled=not all_reviewed and issues
+                disabled=(not all_reviewed and len(issues) > 0)
             )
     
     # Document preview section
