@@ -8,3 +8,6 @@ anthropic
 google-generativeai
 python-docx
 openpyxl
+PyMuPDF>=1.23.0
+pytesseract>=0.3.10
+python-dateutil>=2.8.2
