@@ -22,8 +22,14 @@ import os
 import tempfile
 import weakref
 from contextlib import contextmanager
-import psutil
 import time
+
+# Try to import optional dependencies
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 # Configure logging with more detail
 logging.basicConfig(
@@ -35,6 +41,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+if not PSUTIL_AVAILABLE:
+    logger.warning("psutil not available - memory monitoring disabled")
 
 # Page configuration
 st.set_page_config(
@@ -51,25 +60,41 @@ class MemoryManager:
     @staticmethod
     def get_memory_usage():
         """Get current memory usage in MB"""
-        process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 / 1024
+        if PSUTIL_AVAILABLE:
+            try:
+                process = psutil.Process(os.getpid())
+                return process.memory_info().rss / 1024 / 1024
+            except Exception as e:
+                logger.warning(f"Error getting memory usage: {e}")
+                return 0
+        else:
+            # Return a placeholder value when psutil is not available
+            return 0
     
     @staticmethod
     def cleanup():
         """Force garbage collection and log memory usage"""
-        before = MemoryManager.get_memory_usage()
-        gc.collect()
-        after = MemoryManager.get_memory_usage()
-        logger.info(f"Memory cleanup: {before:.1f}MB -> {after:.1f}MB (freed {before-after:.1f}MB)")
+        if PSUTIL_AVAILABLE:
+            before = MemoryManager.get_memory_usage()
+            gc.collect()
+            after = MemoryManager.get_memory_usage()
+            logger.info(f"Memory cleanup: {before:.1f}MB -> {after:.1f}MB (freed {before-after:.1f}MB)")
+        else:
+            gc.collect()
+            logger.info("Memory cleanup performed (psutil not available for metrics)")
     
     @staticmethod
     def check_memory_threshold(threshold_mb=500):
         """Check if memory usage exceeds threshold"""
-        usage = MemoryManager.get_memory_usage()
-        if usage > threshold_mb:
-            logger.warning(f"High memory usage: {usage:.1f}MB")
+        if PSUTIL_AVAILABLE:
+            usage = MemoryManager.get_memory_usage()
+            if usage > threshold_mb:
+                logger.warning(f"High memory usage: {usage:.1f}MB")
+                MemoryManager.cleanup()
+                return True
+        else:
+            # Still perform periodic cleanup even without metrics
             MemoryManager.cleanup()
-            return True
         return False
 
 # --- Session State Manager ---
@@ -600,6 +625,12 @@ def display_header():
     """Display app header with styling and health status"""
     memory_usage = MemoryManager.get_memory_usage()
     
+    # Format health indicator based on psutil availability
+    if PSUTIL_AVAILABLE and memory_usage > 0:
+        health_html = f'<div class="health-indicator">🟢 System OK | Memory: {memory_usage:.0f}MB</div>'
+    else:
+        health_html = '<div class="health-indicator">🟢 System OK</div>'
+    
     st.markdown("""
     <style>
         .main-header {
@@ -656,11 +687,11 @@ def display_header():
         }
     </style>
     <div class="main-header">
-        <div class="health-indicator">🟢 System OK | Memory: {memory:.0f}MB</div>
+        """ + health_html + """
         <h1>✅ Vive Health Artwork Verification System</h1>
         <p>Automated validation against packaging standards and requirements</p>
     </div>
-    """.format(memory=memory_usage), unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 def display_validation_result_with_review(status, message, result_id, doc_type):
     """Display validation result with review checkboxes"""
@@ -873,9 +904,14 @@ def main():
             
             st.markdown("---")
             st.header("🔧 System Status")
-            memory = MemoryManager.get_memory_usage()
-            st.metric("Memory Usage", f"{memory:.0f} MB", 
-                     delta=f"{memory - 100:.0f} MB" if memory > 100 else None)
+            
+            if PSUTIL_AVAILABLE:
+                memory = MemoryManager.get_memory_usage()
+                st.metric("Memory Usage", f"{memory:.0f} MB", 
+                         delta=f"{memory - 100:.0f} MB" if memory > 100 else None)
+            else:
+                st.info("Memory monitoring unavailable")
+                st.caption("Install psutil for memory metrics")
             
             if st.button("Clear All", type="secondary"):
                 # Clear session state
