@@ -22,26 +22,18 @@ xlsxwriter>=3.1.0
 # Utilities
 python-dateutil>=2.8.0
 
-streamlit 
-re
+# Core application framework
+streamlit
+
+# File Processing
+PyMuPDF>=1.23.0
+Pillow
 pandas
-logging
-BytesIO
-PIL
-Image
-fitz
-pytesseract
-datetime
-Dict
-List
-Tuple
-Optional
-base64
-gc
-sys
-os
-tempfile
-weakref
-contextlib import contextmanager
-time
+openpyxl
+python-dateutil>=2.8.2
+
+# Optical Character Recognition (OCR)
+pytesseract>=0.3.10
+
+# System and Memory Monitoring
 psutil
