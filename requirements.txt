@@ -21,3 +21,27 @@ xlsxwriter>=3.1.0
 
 # Utilities
 python-dateutil>=2.8.0
+
+streamlit 
+re
+pandas
+logging
+BytesIO
+PIL
+Image
+fitz
+pytesseract
+datetime
+Dict
+List
+Tuple
+Optional
+base64
+gc
+sys
+os
+tempfile
+weakref
+contextlib import contextmanager
+time
+psutil
