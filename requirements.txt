@@ -37,3 +37,5 @@ pytesseract>=0.3.10
 
 # System and Memory Monitoring
 psutil
+
+pyzbar
