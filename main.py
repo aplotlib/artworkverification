@@ -95,7 +95,7 @@ class SessionStateManager:
 
 # --- CONSTANTS ---
 DOC_TYPE_CONFIG = {
-    'packaging_artwork': {'keywords': ['packaging', 'box', '_black_240625', '_purple_floral_240625'], 'required': True, 'description': 'Main product packaging artwork'},
+    'packaging_artwork': {'keywords': ['packaging', 'box', '_black_240625', '_purple_floral_240625', 'advanced_purple_floral'], 'required': True, 'description': 'Main product packaging artwork'},
     'manual': {'keywords': ['manual', 'instructions', 'guide', 'qsg', 'quickstart'], 'required': False, 'description': 'Product manual or quick start guide'},
     'washtag': {'keywords': ['washtag', 'wash tag', 'care'], 'required': False, 'description': 'Washtag with care instructions'},
     'shipping_mark': {'keywords': ['shipping', 'mark', 'carton'], 'required': True, 'description': 'Shipping mark with SKU and quantity'},
@@ -190,39 +190,42 @@ class DocumentClassifier:
     """Classifies documents based on filename and content."""
     @staticmethod
     def classify(filename, text):
+        # Add a check for "copy of" prefix and remove it for classification
+        clean_filename = filename.lower().replace('copy of ', '')
         for doc_type, config in DOC_TYPE_CONFIG.items():
-            if any(kw in filename.lower() for kw in config['keywords']):
+            if any(kw in clean_filename for kw in config['keywords']):
                 return doc_type
         if 'distributed by' in text.lower(): return 'packaging_artwork'
         return 'unknown'
 
-# --- VALIDATION LOGIC ---
+# --- VALIDATION LOGIC (FIXED) ---
 class ArtworkValidator:
     """Contains all validation rules for artwork components."""
 
     def validate_packaging_artwork(self, text, filename):
         results = []
+        doc_type = 'packaging'
         if 'made in china' not in text.lower() and 'made in taiwan' not in text.lower():
-            results.append(('failed', f'Missing country of origin on packaging: {filename}', 'origin_missing'))
+            results.append(('failed', f'Missing country of origin on packaging: {filename}', 'origin_missing', doc_type))
         else:
-            results.append(('passed', f'Country of origin present on packaging: {filename}', 'origin_ok'))
+            results.append(('passed', f'Country of origin present on packaging: {filename}', 'origin_ok', doc_type))
         return results
 
     def validate_washtag(self, text, filename):
         results = []
+        doc_type = 'washtag'
         if 'made in china' not in text.lower():
-            results.append(('failed', f'Missing "Made in China" on washtag: {filename}', 'washtag_origin_missing'))
+            results.append(('failed', f'Missing "Made in China" on washtag: {filename}', 'washtag_origin_missing', doc_type))
+        else:
+            results.append(('passed', f'"Made in China" present on washtag: {filename}', 'washtag_origin_ok', doc_type))
+        
         if not any(kw in text.lower() for kw in ['machine wash', 'do not bleach']):
-            results.append(('warning', f'Care instructions may be incomplete on washtag: {filename}', 'washtag_care_incomplete'))
+            results.append(('warning', f'Care instructions may be incomplete on washtag: {filename}', 'washtag_care_incomplete', doc_type))
+        else:
+            results.append(('passed', f'Care instructions appear complete on washtag: {filename}', 'washtag_care_ok', doc_type))
         return results
 
     def cross_validate_serials(self, documents):
-        """
-        New and improved serial number validation logic.
-        - Extracts all 12-digit UPCs and UDIs from all documents.
-        - For each UPC, it checks for a partial match within the found UDIs.
-        - It also validates that the UPC is present in the QR code data of the packaging artwork.
-        """
         results = []
         all_text = " ".join([d.get('text', '') for d in documents.values()])
         all_qr_data = []
@@ -230,62 +233,67 @@ class ArtworkValidator:
             if doc.get('doc_type') == 'packaging_artwork':
                 all_qr_data.extend(doc.get('qr_data', []))
 
-        # Regex to find 12-digit UPCs and UDIs in the format (01)xxxxxxxxxxxxxx
-        upcs = set(re.findall(r'\b(\d{12})\b', all_text))
-        udis = set(re.findall(r'\(01\)(\d{14})', all_text))
+        upcs = set(re.findall(r'\b(\d{12})\b', all_text.replace(" ", "")))
+        udis = set(re.findall(r'\(01\)(\d{14})', all_text.replace(" ", "")))
+        
+        doc_type = 'general' # This is a cross-document check
 
         if not upcs:
-            results.append(('failed', 'No 12-digit UPC serial numbers found in any document.', 'no_upcs_found', 'general'))
+            results.append(('failed', 'No 12-digit UPC serial numbers found in any document.', 'no_upcs_found', doc_type))
             return results
 
         for upc in upcs:
-            # Check 1: UPC and UDI on box should have a partial EXACT match of 12 digit serials.
             udis_with_upc = [udi for udi in udis if upc in udi]
             if not udis_with_upc:
-                results.append(('failed', f'UPC {upc} not found in any UDI.', 'upc_udi_mismatch', 'general'))
+                results.append(('failed', f'UPC {upc} not found in any UDI.', 'upc_udi_mismatch', doc_type))
             else:
-                results.append(('passed', f'UPC {upc} has a matching UDI.', 'upc_udi_match', 'general'))
+                results.append(('passed', f'UPC {upc} has a matching UDI.', 'upc_udi_match', doc_type))
 
-            # Check 2: The Product QR code should have the 12digit UPC serial as well.
-            if not any(upc in qr for qr in all_qr_data):
-                results.append(('failed', f'UPC {upc} not found in any packaging QR code.', 'upc_missing_in_qr', 'general'))
+            if not any(upc in qr.replace(" ", "") for qr in all_qr_data):
+                results.append(('failed', f'UPC {upc} not found in any packaging QR code.', 'upc_missing_in_qr', doc_type))
             else:
-                results.append(('passed', f'UPC {upc} found in packaging QR code.', 'upc_in_qr_ok', 'general'))
-
+                results.append(('passed', f'UPC {upc} found in packaging QR code.', 'upc_in_qr_ok', doc_type))
         return results
 
     def generate_serials_summary(self, documents):
-        """
-        Generates a DataFrame summarizing the found UPCs and UDIs.
-        This is the foundation for the summary table you requested.
-        We can expand this to include SKU and Size information later.
-        """
         all_text = " ".join([d.get('text', '') for d in documents.values()])
-        upcs = set(re.findall(r'\b(\d{12})\b', all_text))
-        udis = set(re.findall(r'\(01\)(\d{14})', all_text))
+        # Remove spaces to handle numbers like "8 10178 88353 0"
+        cleaned_text = all_text.replace(" ", "")
+        upcs = set(re.findall(r'\b(\d{12})\b', cleaned_text))
+        udis = set(re.findall(r'\(01\)(\d{14})', cleaned_text))
         
         rows = []
         for upc in upcs:
-            matching_udi = next((udi for udi in udis if upc in udi), "Not Found")
-            rows.append({
-                "UPC Digits": upc,
-                "UDI Code": matching_udi
-            })
+            matching_udi = next((f"(01){udi}" for udi in udis if upc in udi), "Not Found")
+            rows.append({"UPC Digits": upc, "Matching UDI": matching_udi})
         
-        return pd.DataFrame(rows)
+        if not rows:
+            return pd.DataFrame([{"UPC Digits": "No UPCs found", "Matching UDI": "No UDIs found"}])
 
+        return pd.DataFrame(rows)
 
     def validate_all(self, documents, product_info):
         all_results = []
-        for doc_type, data in documents.items():
-            text, filename = data.get('text', ''), data.get('filename', '')
-            if doc_type == 'packaging_artwork':
-                all_results.extend(self.validate_packaging_artwork(text, filename))
-            elif doc_type == 'washtag':
-                all_results.extend(self.validate_washtag(text, filename))
+        # Create a dictionary to hold text from each doc type for validation
+        docs_by_type = {}
+        for data in documents.values():
+            doc_type = data.get('doc_type', 'unknown')
+            if doc_type not in docs_by_type:
+                docs_by_type[doc_type] = []
+            docs_by_type[doc_type].append(data)
 
+        # Run validations for specific doc types
+        for doc_type, doc_list in docs_by_type.items():
+            for doc_data in doc_list:
+                text, filename = doc_data.get('text', ''), doc_data.get('filename', '')
+                if doc_type == 'packaging_artwork':
+                    all_results.extend(self.validate_packaging_artwork(text, filename))
+                elif doc_type == 'washtag':
+                    all_results.extend(self.validate_washtag(text, filename))
+        
+        # Run cross-document validations
         all_results.extend(self.cross_validate_serials(documents))
-        return [(*r, doc_type) for r in all_results for doc_type in [r[2].split('_')[0]] if r]
+        return all_results
 
 
 # --- UI COMPONENTS ---
@@ -413,7 +421,7 @@ def main():
                     st.dataframe(st.session_state.serials_summary, use_container_width=True)
 
             st.header("📋 Detailed Validation Results & Review")
-            for result in sorted(st.session_state.validation_results, key=lambda x: {'failed': 0, 'warning': 1, 'info': 2, 'passed': 3}[x[0]]):
+            for result in sorted(st.session_state.validation_results, key=lambda x: {'failed': 0, 'warning': 1, 'passed': 2, 'info': 3}.get(x[0], 99)):
                 display_validation_result_with_review(result)
             
             # --- EXPORT ---
