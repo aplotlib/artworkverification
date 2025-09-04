@@ -47,17 +47,13 @@ class AIReviewer:
         prompt = f"""
         You are a senior QA manager. Your task is to provide a final, consolidated summary based on an initial AI review and the original source text.
         A junior AI (Anthropic Claude) has provided an initial analysis. Your job is to review its findings, cross-reference them with the source text, and produce a single, definitive summary. Correct any mistakes or omissions from the first review.
-
         {custom_instructions}
-
         ---ORIGINAL ARTWORK TEXT---
         {text_bundle}
         ---END ORIGINAL ARTWORK TEXT---
-
         ---CLAUDE'S INITIAL REVIEW---
         {anthropic_review}
         ---END CLAUDE'S INITIAL REVIEW---
-
         Provide your final, synthesized review below as a bulleted list. Start with '### Final AI Analysis'.
         """
         try:
@@ -68,7 +64,7 @@ class AIReviewer:
     def _get_single_review(self, client_type, text_bundle, custom_instructions):
         prompt = f"You are a QA specialist. Review the artwork text. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues. {custom_instructions}. Present findings as a bulleted list. Start with '### AI Review'.\n\n---DATA---\n{text_bundle}\n---END DATA---"
         if client_type == 'openai' and self.openai_client:
-            return self._get_openai_synthesis(text_bundle, "", custom_instructions) # Use synthesis prompt for consistency
+            return self._get_openai_synthesis(text_bundle, "", custom_instructions)
         elif client_type == 'anthropic' and self.anthropic_client:
             return self._get_anthropic_review(text_bundle, custom_instructions)
         return f"{client_type.capitalize()} API key not found."
@@ -101,8 +97,7 @@ class DocumentProcessor:
             return {'success': False, 'error': str(e)}
 
     def process_files(self):
-        all_text = []
-        all_skus = set()
+        all_text, all_skus = [], set()
         for file in self.files:
             file_content = ""
             if file['name'].lower().endswith('.pdf'):
@@ -117,7 +112,6 @@ class DocumentProcessor:
             skus_found = re.findall(r'([A-Z]{3,}\d{3,}[A-Z]*)', file_content, re.IGNORECASE)
             for sku in skus_found:
                 all_skus.add(sku.upper())
-        
         return "\n\n".join(all_text), list(all_skus)
 
 # --- Core Logic ---
@@ -163,7 +157,12 @@ def display_report(results, skus):
 def main():
     st.markdown("<h1>Artwork Verification Tool</h1>", unsafe_allow_html=True)
     api_keys = check_api_keys()
-    if 'validation_complete' not in st.session_state: st.session_state.validation_complete = False
+    
+    # Initialize session state
+    if 'validation_complete' not in st.session_state:
+        st.session_state.validation_complete = False
+    if 'run_ai_review' not in st.session_state:
+        st.session_state.run_ai_review = False
 
     with st.sidebar:
         st.header("⚙️ Controls")
@@ -188,44 +187,50 @@ def main():
             st.session_state.clear(); st.rerun()
 
     st.markdown("### Manually Review High-Risk Areas")
-    st.info("""
-    Based on common errors, please manually check these critical points:
+    st.info("""Based on common errors, please manually check these critical points:
     - **Country of Origin**: Ensure "Made in China" (or correct country) is present and accurate.
     - **Color Matching**: Confirm that colors on packaging match labels and specifications.
-    - **UDI Formatting**: Verify that all UDIs are present, correct, and scannable.
-    """)
+    - **UDI Formatting**: Verify that all UDIs are present, correct, and scannable.""")
     st.markdown("---")
     
     uploaded_files = st.file_uploader("Upload all artwork files for one product", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if run_validation and uploaded_files:
-        files = [{"buffer": BytesIO(file.getvalue()), "name": file.name, "bytes": file.getvalue()} for file in uploaded_files]
+        st.session_state.files_to_process = [{"buffer": BytesIO(file.getvalue()), "name": file.name, "bytes": file.getvalue()} for file in uploaded_files]
+        st.session_state.reference_text = st.file_uploader("Reference Text File (.txt)", type=['txt']).read().decode("utf-8").strip() if 'ref_file' in st.session_state and st.session_state.ref_file else None
         
         with st.spinner("Analyzing all documents..."):
-            processor = DocumentProcessor(files)
+            processor = DocumentProcessor(st.session_state.files_to_process)
             all_text_bundle, skus = processor.process_files()
             st.session_state.all_text_bundle = all_text_bundle
             st.session_state.skus = skus
             
-            validator = ArtworkValidator(all_text_bundle)
+            validator = ArtworkValidator(all_text_bundle, st.session_state.reference_text)
             st.session_state.results = validator.validate()
             st.session_state.validation_complete = True
             st.session_state.ai_review_summary = ""
+            st.session_state.run_ai_review = True # Set flag to run AI on the next rerun
+            st.rerun()
 
-        if ai_provider and all_text_bundle:
+    # This block runs AFTER the main validation to prevent rate limit issues
+    if st.session_state.get('run_ai_review'):
+        st.session_state.run_ai_review = False # Unset flag
+        if ai_provider and st.session_state.get('all_text_bundle'):
             with st.spinner("Sending data to AI for review..."):
                 reviewer = AIReviewer(api_keys)
-                summary = reviewer.generate_summary(ai_provider, all_text_bundle, custom_instructions)
+                summary = reviewer.generate_summary(ai_provider, st.session_state.all_text_bundle, custom_instructions)
                 st.session_state.ai_review_summary = summary
-    
+                st.rerun()
+
     if st.session_state.validation_complete:
         display_report(st.session_state.results, st.session_state.skus)
+        
         if st.session_state.ai_review_summary:
             st.markdown("---"); st.header("🤖 AI-Powered Review")
+            st.warning("⚠️ **AI Review is Experimental.** Always rely on the rule-based validation and perform a final human review.")
             st.markdown(st.session_state.ai_review_summary, unsafe_allow_html=True)
-        
-        # Display PDFs
-        pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
+
+        pdf_files = [f for f in st.session_state.get('files_to_process', []) if f['name'].lower().endswith('.pdf')]
         if pdf_files:
             st.header("📄 PDF Previews")
             for pdf_file in pdf_files:
@@ -233,7 +238,7 @@ def main():
                     st.pdf(pdf_file['bytes'])
 
         with st.expander("📄 View Combined Extracted Text"):
-            st.text_area("", st.session_state.all_text_bundle, height=300)
+            st.text_area("", st.session_state.get('all_text_bundle', ''), height=300)
 
 if __name__ == "__main__":
     main()
