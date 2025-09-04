@@ -87,7 +87,8 @@ def display_dashboard(global_results: List, per_doc_results: Dict, docs: List, s
                 has_failure = any(r[0] == 'failed' for r in doc_results)
                 icon = '❌' if has_failure else '✅'
                 
-                with st.expander(f"{icon} **{doc['filename']}**", expanded=True):
+                # Expanders are now collapsed by default for better performance
+                with st.expander(f"{icon} **{doc['filename']}**", expanded=False):
                     if doc_results:
                         st.markdown("**File-Specific Checks:**")
                         for status, msg in doc_results:
@@ -95,8 +96,14 @@ def display_dashboard(global_results: List, per_doc_results: Dict, docs: List, s
                             st.markdown(f"- {res_icon} {msg}")
                         st.markdown("---")
                     
+                    # Truncate long text previews to keep the UI responsive
+                    max_preview_chars = 2000
+                    text_preview = doc['text']
+                    if len(text_preview) > max_preview_chars:
+                        text_preview = text_preview[:max_preview_chars] + "\n\n... (text truncated for performance)"
+
                     st.text_area(
-                        "Extracted Text", doc['text'], height=200, key=f"text_{doc['filename']}",
+                        "Extracted Text Preview", text_preview, height=250, key=f"text_{doc['filename']}",
                         label_visibility="collapsed"
                     )
 
