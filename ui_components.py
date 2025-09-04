@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import fitz # PyMuPDF
+import fitz  # PyMuPDF
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 import re
@@ -13,7 +13,7 @@ def display_instructions():
         st.markdown("""
         **1. Upload Files**: Drag and drop all related artwork files for a single product.
         **2. Configure (Optional)**: In the sidebar, add any specific text that must be present in the files.
-        **3. Run Verification**: Click the button to start. Rule-based checks will appear instantly, followed by the AI summary.
+        **3. Run Verification**: Click the button to start. The results will appear below.
         """)
 
 def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
@@ -36,7 +36,6 @@ def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFil
                              type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
 
 def create_summary_tables(docs: List, skus: List) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    # ... (implementation remains the same as previous version)
     serial_data = []
     all_text = " ".join(d['text'] for d in docs)
     upcs = set(re.findall(r'\b(\d{12})\b', all_text.replace(" ", "")))
@@ -46,61 +45,73 @@ def create_summary_tables(docs: List, skus: List) -> Tuple[pd.DataFrame, pd.Data
         related_udi = next((udi for udi in udis if related_upc != "N/A" and related_upc in udi), "N/A")
         serial_data.append({"SKU": sku, "UPC": related_upc, "UDI": related_udi})
     serials_df = pd.DataFrame(serial_data)
+
     dims_data = [{"File Name": doc['filename'], "Detected Dimensions": ", ".join(doc['dimensions'])}
                  for doc in docs if doc['dimensions']]
     dims_df = pd.DataFrame(dims_data)
     return serials_df, dims_df
 
-
 def display_results_page(global_results: List, per_doc_results: Dict, docs: List, skus: List, ai_summary: str, ai_facts: Dict):
     """Displays the main results page with a streamlined, enterprise-grade UI."""
-    st.header("📊 Verification Summary")
-    summary_container = st.container(border=True)
-    with summary_container:
-        total_failures = len([r for r in global_results if r[0] == 'failed']) + \
-                       sum(1 for res_list in per_doc_results.values() for res in res_list if res[0] == 'failed')
-        if total_failures > 0:
-            st.error(f"**🚨 {total_failures} Issue(s) Found**")
-        else:
-            st.success("**✅ All Automated Checks Passed**")
-        
+    
+    st.header("📊 Verification Results")
+
+    # --- 1. Top-Level Verdict & Issue Summary ---
+    failure_messages = []
+    for status, msg, _ in global_results:
+        if status == 'failed':
+            failure_messages.append(msg)
+    for filename, results in per_doc_results.items():
+        for status, msg in results:
+            if status == 'failed':
+                failure_messages.append(f"**{filename}**: {msg}")
+
+    if failure_messages:
+        with st.container(border=True):
+            st.error(f"**🚨 {len(failure_messages)} Potential Issue(s) Detected**")
+            st.subheader("Summary of Potential Issues")
+            for msg in failure_messages:
+                st.markdown(f"- {msg}")
+            st.caption("Please review these items manually. Some discrepancies may be intentional.")
+    else:
+        st.success("**✅ No Potential Issues Detected**")
+
+    # --- 2. AI-Powered Analysis ---
+    with st.container(border=True):
         if 'ai_processing_complete' not in st.session_state:
             st.info("🤖 AI analysis is running... the summary will appear here shortly.")
         else:
             st.subheader("🤖 AI-Powered Analysis")
             st.markdown(ai_summary, unsafe_allow_html=True)
-
-    with st.expander("View Detailed Reports & Rule-Based Checks"):
-        serials_df, dims_df = create_summary_tables(docs, skus)
-        if not serials_df.empty: st.subheader("Serial Number Report"); st.dataframe(serials_df, use_container_width=True)
-        if not dims_df.empty: st.subheader("Artwork Dimensions Report"); st.dataframe(dims_df, use_container_width=True)
-        st.subheader("Rule-Based Analysis")
-        for status, msg, _ in global_results:
-            st.markdown(f"{'✅' if status == 'passed' else '❌'} {msg}")
-
-    st.header("🔍 Document Inspector")
-    docs_by_type = defaultdict(list)
-    for doc in docs: docs_by_type[doc['doc_type'].replace('_', ' ').title()].append(doc)
     
-    tabs = st.tabs(sorted(docs_by_type.keys()))
-    for i, title in enumerate(sorted(docs_by_type.keys())):
-        with tabs[i]:
-            for doc in docs_by_type[title]:
-                icon = '❌' if any(r[0] == 'failed' for r in per_doc_results.get(doc['filename'], [])) else '✅'
-                with st.expander(f"{icon} **{doc['filename']}** ({doc['file_nature']})", expanded=False):
-                    if doc['doc_type'] == 'packaging_artwork' and ai_facts:
-                        st.markdown("**AI Fact Check Results:**")
-                        st.json(ai_facts)
-                        st.markdown("---")
-                    
-                    if per_doc_results.get(doc['filename']):
-                        st.markdown("**Rule-Based Checks:**")
-                        for status, msg in per_doc_results[doc['filename']]:
-                            st.markdown(f"- {'✅' if status == 'passed' else '❌'} {msg}")
-                    
-                    text_preview = doc['text']
-                    if len(text_preview) > 2000: text_preview = text_preview[:2000] + "\n\n... (text truncated)"
-                    st.text_area("Extracted Text Preview", text_preview, height=250, key=f"text_{doc['filename']}", label_visibility="collapsed")
+    # --- 3. Document Inspector & Detailed Reports ---
+    st.header("🔍 Document Inspector & Details")
+    with st.container(border=True):
+        docs_by_type = defaultdict(list)
+        for doc in docs: docs_by_type[doc['doc_type'].replace('_', ' ').title()].append(doc)
+        
+        tab_titles = ["Summary Tables"] + sorted(docs_by_type.keys())
+        tabs = st.tabs(tab_titles)
+
+        with tabs[0]: # Summary Tables Tab
+            st.subheader("Serial Number Report")
+            serials_df, dims_df = create_summary_tables(docs, skus)
+            st.dataframe(serials_df, use_container_width=True)
+            if not dims_df.empty:
+                st.subheader("Artwork Dimensions Report")
+                st.dataframe(dims_df, use_container_width=True)
+
+        for i, title in enumerate(sorted(docs_by_type.keys())):
+            with tabs[i + 1]:
+                for doc in docs_by_type[title]:
+                    icon = '❌' if any(r[0] == 'failed' for r in per_doc_results.get(doc['filename'], [])) else '✅'
+                    with st.expander(f"{icon} **{doc['filename']}** ({doc['file_nature']})"):
+                        if doc['doc_type'] == 'packaging_artwork' and ai_facts:
+                            st.markdown("**AI Fact Check Results:**"); st.json(ai_facts); st.markdown("---")
+                        
+                        text_preview = doc['text']
+                        if len(text_preview) > 2000: text_preview = text_preview[:2000] + "\n\n... (text truncated)"
+                        st.text_area("Extracted Text Preview", text_preview, height=250, key=f"text_{doc['filename']}", label_visibility="collapsed")
 
 def display_pdf_previews(files: List[Dict[str, Any]]):
     st.header("📄 PDF Previews")
