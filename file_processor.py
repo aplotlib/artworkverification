@@ -85,10 +85,9 @@ class DocumentProcessor:
                     all_skus.add(qc_data.get('sku'))
 
             # Also find SKUs from general text content with a more specific regex
-            skus_found = re.findall(r'\b([A-Z]{3}\d{4,7}[A-Z]{0,3})\b', file_content, re.IGNORECASE)
+            # This pattern specifically looks for SKUs starting with "LVA" followed by numbers and optional letters.
+            skus_found = re.findall(r'\b(LVA\d{4,}[A-Z]*)\b', file_content, re.IGNORECASE)
             for sku in skus_found:
                 all_skus.add(sku.upper())
         
         return processed_docs, list(filter(None, all_skus))
-
-}
