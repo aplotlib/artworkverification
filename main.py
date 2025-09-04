@@ -16,7 +16,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 st.set_page_config(page_title="Artwork Verification Tool", page_icon="✅", layout="wide")
 
-# --- AI Integration ---
+# --- AI Integration (with Chained Review) ---
 def check_api_keys():
     keys = {}
     if hasattr(st, 'secrets'):
@@ -34,34 +34,54 @@ class AIReviewer:
         self.openai_client = openai.OpenAI(api_key=self.api_keys.get('openai')) if 'openai' in api_keys else None
         self.anthropic_client = anthropic.Anthropic(api_key=self.api_keys.get('anthropic')) if 'anthropic' in api_keys else None
 
-    def _get_summary(self, client_type, prompt):
+    def _get_anthropic_review(self, text_bundle, custom_instructions):
+        if not self.anthropic_client: return "Anthropic API key not found."
+        prompt = f"You are a QA specialist. Review the following artwork text. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues like missing 'Made in China' text. {custom_instructions}. Present findings as a bulleted list.\n\n---DATA---\n{text_bundle}\n---END DATA---"
         try:
-            if client_type == 'openai' and self.openai_client:
-                response = self.openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.1)
-                return response.choices[0].message.content
-            elif client_type == 'anthropic' and self.anthropic_client:
-                response = self.anthropic_client.messages.create(model="claude-3-haiku-20240307", max_tokens=1024, messages=[{"role": "user", "content": prompt}], temperature=0.1)
-                return response.content[0].text
-            return f"{client_type.capitalize()} API key not found."
-        except Exception as e:
-            return f"{client_type.capitalize()} API Error: {e}"
+            response = self.anthropic_client.messages.create(model="claude-3-haiku-20240307", max_tokens=1024, messages=[{"role": "user", "content": prompt}])
+            return response.content[0].text
+        except Exception as e: return f"Anthropic API Error: {e}"
+
+    def _get_openai_synthesis(self, text_bundle, anthropic_review, custom_instructions):
+        if not self.openai_client: return "OpenAI API key not found."
+        prompt = f"""
+        You are a senior QA manager. Your task is to provide a final, consolidated summary based on an initial AI review and the original source text.
+        A junior AI (Anthropic Claude) has provided an initial analysis. Your job is to review its findings, cross-reference them with the source text, and produce a single, definitive summary. Correct any mistakes or omissions from the first review.
+
+        {custom_instructions}
+
+        ---ORIGINAL ARTWORK TEXT---
+        {text_bundle}
+        ---END ORIGINAL ARTWORK TEXT---
+
+        ---CLAUDE'S INITIAL REVIEW---
+        {anthropic_review}
+        ---END CLAUDE'S INITIAL REVIEW---
+
+        Provide your final, synthesized review below as a bulleted list. Start with '### Final AI Analysis'.
+        """
+        try:
+            response = self.openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0)
+            return response.choices[0].message.content
+        except Exception as e: return f"OpenAI API Error: {e}"
 
     def generate_summary(self, provider, text_bundle, custom_instructions):
-        instruction_prompt = f"Additionally, follow these instructions: '{custom_instructions}'" if custom_instructions else ""
-        prompt = f"You are a QA specialist reviewing artwork files. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues like missing 'Made in China' text. {instruction_prompt}. Present findings as a bulleted list. Start with '### AI Review'.\n\n---BEGIN DATA---\n{text_bundle}\n---END DATA---"
-        
+        cust_instr = f"Pay special attention to the user's instructions: '{custom_instructions}'" if custom_instructions else ""
         if provider == 'both':
-            openai_summary = self._get_summary('openai', prompt)
-            anthropic_summary = self._get_summary('anthropic', prompt)
-            return f"""<div style="display: flex; gap: 1rem;"><div style="flex: 1;"><h4>OpenAI Review</h4>{openai_summary}</div><div style="flex: 1;"><h4>Anthropic Review</h4>{anthropic_summary}</div></div>"""
-        return self._get_summary(provider, prompt)
+            anthropic_review = self._get_anthropic_review(text_bundle, cust_instr)
+            final_summary = self._get_openai_synthesis(text_bundle, anthropic_review, cust_instr)
+            return final_summary
+        elif provider == 'anthropic':
+            return self._get_anthropic_review(text_bundle, cust_instr)
+        # Default to OpenAI if it's the only one or selected
+        else:
+            prompt = f"You are a QA specialist. Review the artwork text. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues. {cust_instr}. Present findings as a bulleted list. Start with '### AI Review'.\n\n---DATA---\n{text_bundle}\n---END DATA---"
+            return self._get_summary('openai', prompt)
 
 # --- File Processing ---
 class DocumentProcessor:
     def __init__(self, files):
         self.files = files
-        self.extracted_data = []
-        self.skus = set()
 
     def _extract_from_pdf(self, file_buffer):
         text, qr_data = "", []
@@ -77,16 +97,24 @@ class DocumentProcessor:
             return {'success': False, 'error': str(e)}
 
     def process_files(self):
+        all_text = []
+        all_skus = set()
         for file in self.files:
+            file_content = ""
             if file['name'].lower().endswith('.pdf'):
                 result = self._extract_from_pdf(file['buffer'])
                 if result['success']:
-                    self.extracted_data.append({'filename': file['name'], **result})
-                    # Simple SKU extraction from filename for variant detection
-                    sku_match = re.search(r'([A-Z0-9]{5,})', file['name'])
-                    if sku_match:
-                        self.skus.add(sku_match.group(1))
-        return self.extracted_data, list(self.skus)
+                    file_content = result['text']
+            elif file['name'].lower().endswith(('.csv', '.xlsx')):
+                file['buffer'].seek(0)
+                file_content = file['buffer'].read().decode('utf-8', errors='ignore')
+            
+            all_text.append(f"--- File: {file['name']} ---\n{file_content}")
+            skus_found = re.findall(r'([A-Z]{3,}\d{3,}[A-Z]*)', file_content, re.IGNORECASE)
+            for sku in skus_found:
+                all_skus.add(sku.upper())
+        
+        return "\n\n".join(all_text), list(all_skus)
 
 # --- Core Logic ---
 class ArtworkValidator:
@@ -99,18 +127,16 @@ class ArtworkValidator:
         cleaned_text = self.all_text.replace(" ", "").replace("\n", "")
         upcs = set(re.findall(r'(\d{12})', cleaned_text))
         udis = set(re.findall(r'\(01\)(\d{14})', cleaned_text))
-
-        # UDI & UPC Analysis
+        
         if not upcs and not udis:
-            results.append(('failed', "No UPCs or UDIs found in any of the documents.", "no_serials"))
+            results.append(('failed', "No UPCs or UDIs found across all documents.", "no_serials"))
         else:
             for upc in upcs:
                 if not any(upc in udi for udi in udis):
-                    results.append(('failed', f"UPC {upc} does not have a matching UDI.", f"mismatch_{upc}"))
+                    results.append(('failed', f"UPC `{upc}` does not have a matching UDI.", f"mismatch_{upc}"))
                 else:
-                    results.append(('passed', f"UPC {upc} has a matching UDI.", f"match_{upc}"))
+                    results.append(('passed', f"UPC `{upc}` has a matching UDI.", f"match_{upc}"))
         
-        # Reference Text Check
         if self.reference_text and self.reference_text not in self.all_text:
             results.append(('failed', "Mandatory text from the reference file was NOT found.", "ref_text_missing"))
         elif self.reference_text:
@@ -121,29 +147,14 @@ class ArtworkValidator:
 # --- UI Components ---
 def display_report(results, skus):
     st.header("📊 Automated Validation Report")
-
-    # Variant Disclaimer
     if len(skus) > 1:
-        st.warning(f"**Multiple Variants Detected**: The files appear to contain artwork for multiple SKUs ({', '.join(skus)}). Please manually ensure that the differences between these variants are correctly reflected on their respective labels.")
+        st.warning(f"**Multiple Variants Detected**: SKUs `{', '.join(skus)}` were found. Please manually ensure differences are correctly reflected on labels.")
 
-    # UDI & Serial Analysis
     with st.expander("UDI & Serial Number Analysis", expanded=True):
-        st.info("This section checks for the presence of UPCs (12-digit serials) and UDIs, and verifies that they match.")
-        serial_results = [res for res in results if 'no_serials' in res[2] or 'mismatch' in res[2] or 'match' in res[2]]
-        if not serial_results:
-            st.markdown("- No UPCs or UDIs found to analyze.")
-        else:
-            for status, msg, _ in serial_results:
-                icon = '✅' if status == 'passed' else '❌'
-                st.markdown(f"{icon} {msg}")
-
-    # Other Checks
-    other_results = [res for res in results if not ('no_serials' in res[2] or 'mismatch' in res[2] or 'match' in res[2])]
-    if other_results:
-        with st.expander("Additional Checks", expanded=True):
-            for status, msg, _ in other_results:
-                icon = '✅' if status == 'passed' else '❌'
-                st.markdown(f"{icon} {msg}")
+        st.info("Checks for matching UPCs (12-digit) and UDIs across all files.")
+        for status, msg, _ in results:
+            icon = '✅' if status == 'passed' else '❌'
+            st.markdown(f"{icon} {msg}")
 
 def main():
     st.markdown("<h1>Artwork Verification Tool</h1>", unsafe_allow_html=True)
@@ -154,59 +165,51 @@ def main():
         st.header("⚙️ Controls")
         run_validation = st.button("🔍 Run Validation", type="primary")
         
-        st.header("📝 Custom Rules (Optional)")
-        ref_file = st.file_uploader("Reference Text File (.txt)", type=['txt'])
-        custom_instructions = st.text_area("Custom Instructions for AI")
+        st.header("🤖 AI Review")
+        custom_instructions = st.text_area("Custom Instructions for AI (Optional)", help="Guide the AI's focus, e.g., 'Check for a 1-year warranty statement.'")
         
-        st.header("🤖 AI Review (Optional)")
-        enable_ai_review = st.toggle("Enable AI Review")
-        ai_provider = None
-        if enable_ai_review:
-            options = {"Select AI...": None}
-            if 'openai' in api_keys: options["OpenAI"] = 'openai'
-            if 'anthropic' in api_keys: options["Anthropic"] = 'anthropic'
-            if 'openai' in api_keys and 'anthropic' in api_keys: options["Both"] = 'both'
-            
-            if len(options) > 1:
-                selected = st.selectbox("Choose AI Provider", options=options.keys())
-                ai_provider = options[selected]
-            else:
-                st.error("No API keys found in secrets.")
+        options = {"Select AI Provider...": None}
+        if 'openai' in api_keys: options["OpenAI"] = 'openai'
+        if 'anthropic' in api_keys: options["Anthropic"] = 'anthropic'
+        if 'openai' in api_keys and 'anthropic' in api_keys: options["Both (Anthropic -> OpenAI)"] = 'both'
+        
+        if len(options) > 1:
+            selected = st.selectbox("Choose AI Provider", options=options.keys())
+            ai_provider = options[selected]
+        else:
+            st.warning("No AI API keys found in secrets. AI review is disabled.")
+            ai_provider = None
         
         if st.button("Clear & Reset"):
             st.session_state.clear(); st.rerun()
 
-    st.markdown("### Manual Checkpoints")
-    st.info("Based on past issues, please manually double-check these key areas.")
-    cols = st.columns(2)
-    cols[0].checkbox("Is the **Country of Origin** correct on all labels?", key="check1")
-    cols[0].checkbox("Does the **Logo Color** match specifications?", key="check2")
-    cols[1].checkbox("Are all **QR codes** present and correct?", key="check3")
-    cols[1].checkbox("Do **UDIs** appear correctly formatted on all labels?", key="check4")
+    st.markdown("### Manually Review High-Risk Areas")
+    st.info("""
+    Based on common errors, please manually check these critical points:
+    - **Country of Origin**: Ensure "Made in China" (or correct country) is present and accurate.
+    - **Color Matching**: Confirm that colors on packaging match labels and specifications.
+    - **UDI Formatting**: Verify that all UDIs are present, correct, and scannable.
+    """)
     st.markdown("---")
     
     uploaded_files = st.file_uploader("Upload all artwork files for one product", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if run_validation and uploaded_files:
         files = [{"buffer": BytesIO(file.getvalue()), "name": file.name} for file in uploaded_files]
-        reference_text = ref_file.read().decode("utf-8").strip() if ref_file else None
         
         with st.spinner("Analyzing all documents..."):
             processor = DocumentProcessor(files)
-            extracted_data, skus = processor.process_files()
-            st.session_state.extracted_data = extracted_data
+            all_text_bundle, skus = processor.process_files()
+            st.session_state.all_text_bundle = all_text_bundle
             st.session_state.skus = skus
             
-            all_text_bundle = "\n\n---***---\n\n".join([f"File: {d['filename']}\n\n{d['text']}" for d in extracted_data])
-            st.session_state.all_text_bundle = all_text_bundle
-            
-            validator = ArtworkValidator(all_text_bundle, reference_text)
+            validator = ArtworkValidator(all_text_bundle)
             st.session_state.results = validator.validate()
             st.session_state.validation_complete = True
             st.session_state.ai_review_summary = ""
 
-        if enable_ai_review and ai_provider and all_text_bundle:
-            with st.spinner("Sending data to AI for optional review..."):
+        if ai_provider and all_text_bundle:
+            with st.spinner("Sending data to AI for review..."):
                 reviewer = AIReviewer(api_keys)
                 summary = reviewer.generate_summary(ai_provider, all_text_bundle, custom_instructions)
                 st.session_state.ai_review_summary = summary
@@ -215,10 +218,9 @@ def main():
         display_report(st.session_state.results, st.session_state.skus)
         if st.session_state.ai_review_summary:
             st.markdown("---"); st.header("🤖 AI-Powered Review")
-            st.warning("⚠️ **AI Review is Experimental.** Always rely on the rule-based validation and perform a final human review.")
             st.markdown(st.session_state.ai_review_summary, unsafe_allow_html=True)
-        with st.expander("📄 View Extracted Text"):
-            st.text(st.session_state.all_text_bundle)
+        with st.expander("📄 View Combined Extracted Text"):
+            st.text_area("", st.session_state.all_text_bundle, height=300)
 
 if __name__ == "__main__":
     main()
