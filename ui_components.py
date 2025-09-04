@@ -46,7 +46,7 @@ def display_dashboard(global_results: List, per_doc_results: Dict, docs: List, s
 
     # --- Overall Status ---
     global_failures = [r for r in global_results if r[0] == 'failed']
-    doc_failures = sum(1 for-res-list in per_doc_results.values() for res in res_list if res[0] == 'failed')
+    doc_failures = sum(1 for res_list in per_doc_results.values() for res in res_list if res[0] == 'failed')
     total_failures = len(global_failures) + doc_failures
         
     if total_failures > 0:
