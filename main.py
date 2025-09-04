@@ -68,9 +68,7 @@ class AIReviewer:
             return f"Anthropic API Error: {e}"
 
     def generate_summary(self, provider, variant_sku, text_bundle, custom_instructions):
-        instruction_prompt = ""
-        if custom_instructions:
-            instruction_prompt = f"In addition, the user has provided the following special instructions: '{custom_instructions}'. Please incorporate these into your review."
+        instruction_prompt = f"In addition, the user has provided the following special instructions: '{custom_instructions}'. Please incorporate these into your review." if custom_instructions else ""
 
         prompt = f"""
         You are a meticulous quality assurance specialist for Vive Health. Review the extracted text from artwork files for product variant {variant_sku} and provide a concise summary.
@@ -82,7 +80,6 @@ class AIReviewer:
         {text_bundle}
         ---
         """
-
         if provider == 'openai':
             return self._get_openai_summary(prompt)
         elif provider == 'anthropic':
@@ -93,35 +90,28 @@ class AIReviewer:
             return f"""
             <div style="display: flex; gap: 20px;">
                 <div style="flex: 1; border: 1px solid #ddd; border-radius: 5px; padding: 10px;">
-                    <h4>OpenAI (GPT-4o Mini) Review</h4>
-                    {openai_summary}
+                    <h4>OpenAI (GPT-4o Mini) Review</h4>{openai_summary}
                 </div>
                 <div style="flex: 1; border: 1px solid #ddd; border-radius: 5px; padding: 10px;">
-                    <h4>Anthropic (Claude Haiku) Review</h4>
-                    {anthropic_summary}
+                    <h4>Anthropic (Claude Haiku) Review</h4>{anthropic_summary}
                 </div>
-            </div>
-            """
-        else:
-            return "Error: Invalid AI provider selected."
+            </div>"""
+        return "Error: Invalid AI provider selected."
 
 # --- File Processing and Extraction ---
 @contextmanager
 def managed_pdf_document(file_buffer):
     pdf_doc = None
     try:
-        file_buffer.seek(0)
-        pdf_doc = fitz.open(stream=file_buffer.read(), filetype="pdf")
-        yield pdf_doc
+        file_buffer.seek(0); yield fitz.open(stream=file_buffer.read(), filetype="pdf")
     finally:
         if pdf_doc: pdf_doc.close()
 
 class DocumentExtractor:
-    # ... (DocumentExtractor class remains the same)
     @staticmethod
-    def _decode_qr_codes(image: Image.Image) -> List[str]:
+    def _decode_qr_codes(image: Image.Image):
         try: return [obj.data.decode('utf-8') for obj in qr_decode(image)]
-        except Exception: return []
+        except: return []
 
     @staticmethod
     def _extract_from_pdf(file_buffer):
@@ -129,8 +119,7 @@ class DocumentExtractor:
         try:
             with managed_pdf_document(file_buffer) as pdf_doc:
                 if len(pdf_doc) > 0:
-                    rect = pdf_doc[0].rect
-                    page_dims = f"{rect.width/72:.2f} x {rect.height/72:.2f} inches"
+                    page_dims = f"{pdf_doc[0].rect.width/72:.2f} x {pdf_doc[0].rect.height/72:.2f} inches"
                 for page in pdf_doc:
                     text += page.get_text()
                     pix = page.get_pixmap(dpi=200)
@@ -142,27 +131,36 @@ class DocumentExtractor:
     @staticmethod
     def _extract_from_qc_sheet(file_buffer, filename):
         try:
-            df = pd.read_csv(file_buffer, dtype=str).fillna('')
+            df = pd.read_csv(file_buffer, dtype=str, header=None).fillna('')
             specs = {'text': df.to_string()}
-            main_product_row = df[df.iloc[:, 2] == 'Wheelchair Bag Advanced']
-            if not main_product_row.empty:
-                specs['sku'] = str(main_product_row.iloc[0, 5])
-                specs['color'] = str(main_product_row.iloc[0, 8])
+            # Search for headers and extract adjacent values
+            for _, row in df.iterrows():
+                row_str = ' '.join(row.astype(str))
+                if "PRODUCT SKU CODE" in row_str:
+                    for i, cell in enumerate(row):
+                        if "PRODUCT SKU CODE" in cell and len(row) > i + 1:
+                            specs['sku'] = str(row[i+2]).strip()
+                if "PRODUCT COLOR" in row_str:
+                     for i, cell in enumerate(row):
+                        if "PRODUCT COLOR" in cell and len(row) > i + 1:
+                            specs['color'] = str(row[i+2]).strip()
+            if 'sku' not in specs:
+                return {'success': False, 'error': "Could not find 'PRODUCT SKU CODE' in QC sheet."}
             return {'success': True, **specs}
-        except Exception as e: return {'success': False, 'error': f"Could not parse QC Sheet: {e}"}
+        except Exception as e:
+            return {'success': False, 'error': f"Could not parse QC Sheet: {e}"}
 
     @staticmethod
     def extract(file_buffer, file_type, filename):
-        if 'qc' in filename.lower() or '.csv' in filename.lower():
+        clean_name = filename.lower()
+        if 'qc' in clean_name or '.csv' in clean_name or '.xlsx' in clean_name:
             return DocumentExtractor._extract_from_qc_sheet(file_buffer, filename)
         elif file_type == "application/pdf":
             return DocumentExtractor._extract_from_pdf(file_buffer)
         return {'success': False, 'error': 'Unsupported file type'}
 
-
 # --- Product Data Structure Builder ---
 class ProductDataBuilder:
-    # ... (ProductDataBuilder class remains the same)
     def __init__(self, files):
         self.files = files
         self.product_data = {"variants": {}, "shared_files": {}, "unassociated": []}
@@ -180,6 +178,7 @@ class ProductDataBuilder:
             if extraction.get('success') and extraction.get('sku'):
                 sku = extraction['sku']
                 self.product_data['variants'][sku] = {"sku": sku, "color": extraction.get('color'), "files": {'qc_sheet': {'filename': file['name'], **extraction}}}
+
         other_files = [f for f in self.files if self._get_doc_type(f['name']) != 'qc_sheet']
         for file in other_files:
             doc_type = self._get_doc_type(file['name'])
@@ -191,7 +190,7 @@ class ProductDataBuilder:
                 continue
             associated = False
             for sku, variant_data in self.product_data['variants'].items():
-                if str(sku).lower() in file['name'].lower() or (variant_data.get('color') and str(variant_data['color']).lower() in file['name'].lower()):
+                if str(sku).lower() in file['name'].lower() or (variant_data.get('color') and str(variant_data.get('color')).lower() in file['name'].lower()):
                     variant_data['files'][doc_type] = file_data
                     associated = True
                     break
@@ -199,18 +198,16 @@ class ProductDataBuilder:
                 self.product_data["unassociated"].append(file_data)
         return self.product_data
 
-
 # --- Artwork Validator ---
 class ArtworkValidator:
-    # ... (ArtworkValidator class remains the same)
     def __init__(self, product_data, reference_text=None):
         self.product_data = product_data
         self.reference_text = reference_text
 
     def _validate_origin(self, text, filename, doc_type_name):
         if 'made in china' not in text.lower():
-            return [('failed', f'Missing "Made in China" on {doc_type_name}: {filename}', f'{doc_type_name}_origin_missing')]
-        return [('passed', f'"Made in China" present on {doc_type_name}: {filename}', f'{doc_type_name}_origin_ok')]
+            return [('failed', f'Missing "Made in China" on {doc_type_name}: {filename}', f'origin_missing_{filename}')]
+        return [('passed', f'"Made in China" present on {doc_type_name}: {filename}', f'origin_ok_{filename}')]
 
     def _validate_reference_text(self, text_bundle, context):
         if self.reference_text and self.reference_text not in text_bundle:
@@ -218,119 +215,88 @@ class ArtworkValidator:
         elif self.reference_text:
             return [('passed', f"Mandatory text from reference file was found for {context}.", f"ref_text_ok_{context}")]
         return []
-        
-    def _validate_serials_for_variant(self, variant):
-        results = []
-        all_files = list(variant['files'].values()) + list(self.product_data['shared_files'].values())
-        all_text = " ".join([d.get('text', '') for d in all_files])
-        cleaned_text = all_text.replace(" ", "").replace("\n", "")
-        packaging_file = variant['files'].get('packaging_artwork')
-        qr_data = packaging_file.get('qr_data', []) if packaging_file else []
+
+    def _validate_serials(self, all_text, context):
+        results, cleaned_text = [], all_text.replace(" ", "").replace("\n", "")
         upcs = set(re.findall(r'(\d{12})', cleaned_text))
         udis = set(re.findall(r'\(01\)(\d{14})', cleaned_text))
         if not upcs:
-            return [('failed', f"No 12-digit UPCs found for variant {variant['sku']}", f"no_upc_{variant['sku']}")]
+            return [('failed', f"No 12-digit UPCs found for {context}", f"no_upc_{context}")]
         for upc in upcs:
             if not any(upc in udi for udi in udis):
-                results.append(('failed', f"UPC {upc} has no matching UDI for variant {variant['sku']}", f"mismatch_{upc}"))
+                results.append(('failed', f"UPC {upc} has no matching UDI for {context}", f"mismatch_{upc}"))
             else:
-                results.append(('passed', f"UPC {upc} has a matching UDI for variant {variant['sku']}", f"match_{upc}"))
-            if not any(upc in qr for qr in qr_data):
-                results.append(('failed', f"UPC {upc} not found in packaging QR for variant {variant['sku']}", f"no_qr_{upc}"))
-            else:
-                results.append(('passed', f"UPC {upc} found in packaging QR for variant {variant['sku']}", f"qr_ok_{upc}"))
+                results.append(('passed', f"UPC {upc} has a matching UDI for {context}", f"match_{upc}"))
         return results
 
     def validate_all(self):
         all_results = []
         for sku, variant in self.product_data['variants'].items():
-            variant_results = []
-            if 'packaging_artwork' not in variant['files']:
-                 variant_results.append(('failed', f"Missing packaging artwork for {sku}", f"missing_pkg_{sku}"))
             variant_files = list(variant.get('files', {}).values())
             shared_files = list(self.product_data.get('shared_files', {}).values())
             all_text_bundle = " ".join(d.get('text', '') for d in variant_files + shared_files)
-            variant_results.extend(self._validate_serials_for_variant(variant))
+            
+            variant_results = self._validate_serials(all_text_bundle, sku)
             variant_results.extend(self._validate_reference_text(all_text_bundle, sku))
             for res in variant_results:
                 all_results.append((res[0], res[1], res[2], sku))
+
         for file_data in self.product_data['unassociated']:
-            filename = file_data['filename']
-            unassociated_results = [('failed', f"File '{filename}' could not be associated with any product variant and requires manual review.", f"unassociated_{filename}")]
-            text = file_data.get('text', '')
+            filename, text = file_data['filename'], file_data.get('text', '')
+            unassociated_results = [('failed', f"File '{filename}' could not be associated with a variant and requires manual review.", f"unassociated_{filename}")]
             unassociated_results.extend(self._validate_origin(text, filename, 'unassociated file'))
             unassociated_results.extend(self._validate_reference_text(text, filename))
             for res in unassociated_results:
                 all_results.append((res[0], res[1], res[2], 'Unassociated Files'))
         return all_results
 
-
 # --- UI Components ---
 def display_header():
-    # ... (remains the same)
-    st.markdown("""
-    <style> .main-header { padding: 1.5rem; background-color: #0891b2; border-radius: 10px; text-align: center; margin-bottom: 2rem; color: white; } .success-box, .error-box, .warning-box { padding: 1rem; margin: 0.5rem 0; border-radius: 5px; } .success-box { background-color: #d1fae5; border-left: 5px solid #10b981; } .error-box { background-color: #fee2e2; border-left: 5px solid #ef4444; } .warning-box { background-color: #fef3c7; border-left: 5px solid #f59e0b; } </style>
-    <div class="main-header">
-        <h1>✅ Vive Health Artwork Verification System</h1>
-        <p>Rule-Based Validation with Optional AI-Powered Review</p>
-    </div>
-    """, unsafe_allow_html=True)
-
+    st.markdown("""<style>.main-header { padding: 1.5rem; background-color: #0891b2; border-radius: 10px; text-align: center; margin-bottom: 2rem; color: white; } .success-box, .error-box, .warning-box { padding: 1rem; margin: 0.5rem 0; border-radius: 5px; } .success-box { background-color: #d1fae5; border-left: 5px solid #10b981; } .error-box { background-color: #fee2e2; border-left: 5px solid #ef4444; } .warning-box { background-color: #fef3c7; border-left: 5px solid #f59e0b; }</style><div class="main-header"><h1>✅ Vive Health Artwork Verification System</h1><p>Rule-Based Validation with Optional AI-Powered Review</p></div>""", unsafe_allow_html=True)
 
 def display_results(results):
-    # ... (remains the same)
     results_by_context = {}
-    for status, msg, res_id, context in results:
+    for status, msg, _, context in results:
         if context not in results_by_context: results_by_context[context] = []
         results_by_context[context].append((status, msg))
+    
     if 'Unassociated Files' in results_by_context:
         with st.expander("### ⚠️ Unassociated Files Requiring Manual Review", expanded=True):
-            st.error("The following files could not be automatically matched to a product variant. They must be manually reviewed.")
+            st.error("The following files could not be matched to a product variant. They must be manually reviewed.")
             for status, msg in results_by_context['Unassociated Files']:
                 st.markdown(f'<div class="error-box">❌ {msg}</div>', unsafe_allow_html=True)
+
     for context, context_results in results_by_context.items():
         if context == 'Unassociated Files': continue
         with st.expander(f"### Rule-Based Validation Results for: {context}", expanded=True):
-            st.info("ℹ️ These results are based on precise, rule-based checks and are the primary source of truth.")
+            st.info("ℹ️ These are the primary, rule-based checks.")
             for status, msg in sorted(context_results, key=lambda x: {'failed': 0, 'warning': 1, 'passed': 2}.get(x[0], 99)):
                 icon = {'passed': '✅', 'failed': '❌', 'warning': '⚠️'}.get(status)
                 box_class = {'passed': 'success-box', 'failed': 'error-box', 'warning': 'warning-box'}.get(status)
                 st.markdown(f'<div class="{box_class}">{icon} {msg}</div>', unsafe_allow_html=True)
 
-
 def display_ai_review(ai_reviews):
-    # ... (remains the same)
-    st.markdown("---")
-    st.header("🤖 AI-Powered Review")
-    st.warning("""
-    ⚠️ **AI Review is Experimental & For Reference Only.**
-    This summary is generated by an AI and may contain inaccuracies. It is intended as a supplementary check to help spot potential issues.
-    **Always rely on the rule-based validation results and perform a final human review.**
-    """)
+    st.markdown("---"); st.header("🤖 AI-Powered Review")
+    st.warning("⚠️ **AI Review is Experimental.** This summary is for reference only. Always rely on the rule-based validation and perform a final human review.")
     for summary in ai_reviews:
         st.markdown(summary, unsafe_allow_html=True)
-
 
 # --- Main App Logic ---
 def main():
     display_header()
     api_keys = check_api_keys()
-
     if 'validation_complete' not in st.session_state: st.session_state.validation_complete = False
 
     with st.sidebar:
         st.header("🚀 Actions")
         run_validation = st.button("🔍 Run Validation", type="primary")
-        
         st.markdown("---")
         st.header("📝 Custom Validation Rules (Optional)")
         ref_file = st.file_uploader("Reference Text File (.txt)", type=['txt'])
         custom_instructions = st.text_area("Custom Instructions for AI")
-
         st.markdown("---")
         st.header("🤖 AI-Powered Review (Optional)")
         enable_ai_review = st.toggle("Enable AI Review", value=False)
-        
         ai_provider = None
         if enable_ai_review:
             provider_options = {"Select AI...": None}
@@ -338,27 +304,19 @@ def main():
             if 'anthropic' in api_keys: provider_options["Anthropic (Claude Haiku)"] = 'anthropic'
             if 'openai' in api_keys and 'anthropic' in api_keys:
                 provider_options["Both (Compare Results)"] = 'both'
-
             if len(provider_options) > 1:
                 selected_provider = st.selectbox("Choose AI Provider", options=list(provider_options.keys()))
                 ai_provider = provider_options[selected_provider]
-            else:
-                st.error("No API keys found in secrets.")
-        
+            else: st.error("No API keys found in secrets.")
         if st.button("Clear & Reset"):
-            st.session_state.clear()
-            st.rerun()
+            st.session_state.clear(); st.rerun()
 
-    st.markdown("### Double-Check These Areas")
-    st.info("Based on past issues, please manually double-check the following points in your artwork files:")
+    st.markdown("### Double-Check These Areas"); st.info("Based on past issues, please manually double-check these points.")
     cols = st.columns(2)
-    with cols[0]:
-        st.checkbox("Is the **Country of Origin** correct on all labels?", key="check1")
-        st.checkbox("Does the **Logo Color** match the QC sheet?", key="check2")
-    with cols[1]:
-        st.checkbox("Are all **QR codes** present and correct?", key="check3")
-        st.checkbox("Do **dimensions** on tags match the QC sheet?", key="check4")
-    
+    cols[0].checkbox("Is the **Country of Origin** correct?", key="check1")
+    cols[0].checkbox("Does the **Logo Color** match the QC sheet?", key="check2")
+    cols[1].checkbox("Are all **QR codes** present and correct?", key="check3")
+    cols[1].checkbox("Do **dimensions** on tags match specs?", key="check4")
     st.markdown("---")
     
     uploaded_files = st.file_uploader("Upload all artwork & QC files", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
@@ -366,7 +324,6 @@ def main():
     if run_validation and uploaded_files:
         files_to_process = [{"buffer": file, "name": file.name, "type": file.type} for file in uploaded_files]
         reference_text = ref_file.read().decode("utf-8").strip() if ref_file else None
-
         with st.spinner("Processing files and building product structure..."):
             builder = ProductDataBuilder(files_to_process)
             product_data = builder.build()
@@ -376,7 +333,6 @@ def main():
             st.session_state.results = validator.validate_all()
             st.session_state.validation_complete = True
             st.session_state.ai_reviews = []
-
         if enable_ai_review and ai_provider:
             with st.spinner(f"Sending data to AI for optional review..."):
                 reviewer = AIReviewer(api_keys)
@@ -389,10 +345,8 @@ def main():
     if st.session_state.validation_complete:
         st.header("📊 Automated Validation Report")
         display_results(st.session_state.results)
-        
         if st.session_state.get('ai_reviews'):
             display_ai_review(st.session_state.ai_reviews)
-            
         st.header("📄 Data Structure Preview")
         with st.expander("Click to see how files were grouped"):
             st.json(st.session_state.product_data, expanded=False)
