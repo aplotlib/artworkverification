@@ -1,7 +1,4 @@
-# Tesseract OCR engine and required language packs
 tesseract-ocr
 tesseract-ocr-eng
 libtesseract-dev
-
-# ZBar library for QR code scanning
 libzbar0
