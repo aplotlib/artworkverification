@@ -5,6 +5,7 @@ from validator import ArtworkValidator
 from ai_analyzer import AIReviewer, check_api_keys
 from ui_components import (
     display_header,
+    display_instructions,
     display_sidebar,
     display_file_uploader,
     display_dashboard,
@@ -16,7 +17,6 @@ def main():
     """Main function to run the Streamlit application."""
     st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
 
-    # Initialize session state
     if "validation_complete" not in st.session_state:
         st.session_state.validation_complete = False
         st.session_state.global_results = []
@@ -27,6 +27,8 @@ def main():
         st.session_state.uploaded_files_data = []
 
     display_header()
+    display_instructions()
+    
     api_keys = check_api_keys()
     run_validation, custom_instructions, reference_text = display_sidebar(api_keys)
     uploaded_files = display_file_uploader()
