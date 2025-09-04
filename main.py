@@ -304,7 +304,7 @@ def main():
             st.session_state.clear(); st.rerun()
 
     st.markdown("### Manual Checkpoints")
-    st.info("Based on past issues, please manually double-check these key areas in your artwork.")
+    st.info("Please manually double-check these key areas in your artwork. This tool uses OCR and AI APIs to review the files, no tool is 100%, no human is 100%, please use as an additional layer of review, but not the only layer. Thank you!")
     cols = st.columns(2)
     cols[0].checkbox("Is the **Country of Origin** correct?", key="check1")
     cols[0].checkbox("Does the **Logo Color** match the QC sheet?", key="check2")
