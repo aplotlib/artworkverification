@@ -26,7 +26,6 @@ st.set_page_config(page_title="Vive Health Artwork Verification", page_icon="✅
 
 # --- Constants for Document Classification ---
 SHARED_FILE_KEYWORDS = ['manual', 'instructions', 'guide', 'qsg', 'quickstart', 'washtag', 'wash tag', 'care', 'logo']
-VARIANT_SPECIFIC_KEYWORDS = ['packaging', 'box', 'shipping', 'mark', 'carton', 'tag']
 DOC_TYPE_MAP = {
     'packaging_artwork': ['packaging', 'box'],
     'manual': ['manual', 'instructions', 'guide', 'qsg', 'quickstart'],
@@ -47,6 +46,7 @@ def check_api_keys():
     return keys
 
 class AIReviewer:
+    # ... (AIReviewer class remains the same)
     def __init__(self, provider, api_keys):
         self.provider = provider
         self.api_keys = api_keys
@@ -54,44 +54,30 @@ class AIReviewer:
     def generate_summary(self, variant_sku, text_bundle):
         prompt = f"""
         You are a meticulous quality assurance specialist for a company named Vive Health. Your task is to review the extracted text from a set of artwork files for a specific product variant and provide a concise summary of your findings.
-
         Product Variant SKU: {variant_sku}
-
         Here is the combined text from all relevant documents (packaging, shipping marks, QC sheets, etc.):
         ---
         {text_bundle}
         ---
-
         Based on the text provided, please perform the following:
         1.  **Identify Key Information**: Find the primary Product Name, SKU, UPC (12-digit barcode number), and UDI (a longer number usually starting with '(01)').
         2.  **Check for Consistency**: State whether these key pieces of information appear to be consistent across the different documents.
         3.  **Flag Potential Issues**: Mention any other potential issues you see, such as missing "Made in China" text, conflicting product names, or formatting problems in the serial numbers.
-
         Present your findings as a brief, bulleted list. Be professional and objective. Start your response with "### AI Review Summary for {variant_sku}".
         """
         try:
             if self.provider == 'openai' and 'openai' in self.api_keys:
                 client = openai.OpenAI(api_key=self.api_keys['openai'])
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                )
+                response = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.1)
                 return response.choices[0].message.content
             elif self.provider == 'anthropic' and 'anthropic' in self.api_keys:
                 client = anthropic.Anthropic(api_key=self.api_keys['anthropic'])
-                response = client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=1024,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                )
+                response = client.messages.create(model="claude-3-haiku-20240307", max_tokens=1024, messages=[{"role": "user", "content": prompt}], temperature=0.1)
                 return response.content[0].text
             else:
-                return f"Error: API key for {self.provider} not found or provider is not selected."
+                return f"Error: API key for {self.provider} not found."
         except Exception as e:
-            logger.error(f"AI review failed for {self.provider}: {e}")
-            return f"An error occurred while generating the AI review: {str(e)}"
+            return f"An error occurred during AI review: {str(e)}"
 
 # --- File Processing and Extraction ---
 @contextmanager
@@ -109,8 +95,7 @@ class DocumentExtractor:
     def _decode_qr_codes(image: Image.Image) -> List[str]:
         try:
             return [obj.data.decode('utf-8') for obj in qr_decode(image)]
-        except Exception:
-            return []
+        except Exception: return []
 
     @staticmethod
     def _extract_from_pdf(file_buffer):
@@ -133,17 +118,24 @@ class DocumentExtractor:
     def _extract_from_qc_sheet(file_buffer, filename):
         try:
             df = pd.read_csv(file_buffer, dtype=str).fillna('')
-            sku_row = df[df.iloc[:, 2] == 'Wheelchair Bag Advanced']
-            if sku_row.empty:
-                return {'success': False, 'error': "Could not find 'Wheelchair Bag Advanced' in Column C of the QC sheet."}
-            
-            # Convert to string to prevent errors
-            sku = str(sku_row.iloc[0, 5])
-            color = str(sku_row.iloc[0, 8])
-            
-            return {'success': True, 'text': df.to_string(), 'sku': sku, 'color': color}
+            specs = {'text': df.to_string()}
+            # Find row for the main product to get SKU and Color
+            main_product_row = df[df.iloc[:, 2] == 'Wheelchair Bag Advanced']
+            if not main_product_row.empty:
+                specs['sku'] = str(main_product_row.iloc[0, 5])
+                specs['color'] = str(main_product_row.iloc[0, 8])
+            # Find logo color from the "PRODUCT - LOGO TAG" section
+            for index, row in df.iterrows():
+                if 'PRODUCT - LOGO TAG' in str(row.iloc[0]):
+                    # Assuming color is in the cell below the description
+                    logo_color_text = str(df.iloc[index + 1, 1])
+                    if 'color:' in logo_color_text.lower():
+                        specs['logo_color'] = logo_color_text.split(':')[-1].strip()
+                    break
+            return {'success': True, **specs}
         except Exception as e:
             return {'success': False, 'error': f"Could not parse QC Sheet: {e}"}
+
 
     @staticmethod
     def extract(file_buffer, file_type, filename):
@@ -155,6 +147,7 @@ class DocumentExtractor:
 
 # --- Product Data Structure and Classifier ---
 class ProductDataBuilder:
+    # ... (ProductDataBuilder class remains largely the same)
     def __init__(self, files):
         self.files = files
         self.product_data = {"variants": {}, "shared_files": {}}
@@ -167,39 +160,42 @@ class ProductDataBuilder:
         return 'unknown'
 
     def build(self):
-        # First pass for QC sheets
-        for file in self.files:
-            if self._get_doc_type(file['name']) == 'qc_sheet':
-                extraction = DocumentExtractor.extract(file['buffer'], file['type'], file['name'])
-                if extraction['success']:
-                    sku = extraction['sku']
-                    self.product_data['variants'][sku] = {"sku": sku, "color": extraction['color'], "files": {}}
-        
-        # Second pass for other files
-        for file in self.files:
+        qc_sheets = [f for f in self.files if self._get_doc_type(f['name']) == 'qc_sheet']
+        for file in qc_sheets:
+            extraction = DocumentExtractor.extract(file['buffer'], file['type'], file['name'])
+            if extraction['success']:
+                sku = extraction.get('sku')
+                if sku:
+                    self.product_data['variants'][sku] = {
+                        "sku": sku,
+                        "color": extraction.get('color'),
+                        "files": {'qc_sheet': {'filename': file['name'], **extraction}}
+                    }
+
+        other_files = [f for f in self.files if self._get_doc_type(f['name']) != 'qc_sheet']
+        for file in other_files:
             doc_type = self._get_doc_type(file['name'])
-            if doc_type == 'qc_sheet': continue
             extraction = DocumentExtractor.extract(file['buffer'], file['type'], file['name'])
             if not extraction['success']: continue
             file_data = {'filename': file['name'], 'doc_type': doc_type, **extraction}
-            is_shared = any(kw in file['name'].lower() for kw in SHARED_FILE_KEYWORDS)
-            if is_shared:
+            
+            if any(kw in file['name'].lower() for kw in SHARED_FILE_KEYWORDS):
                 self.product_data['shared_files'][doc_type] = file_data
                 continue
+
             associated = False
             for sku, variant_data in self.product_data['variants'].items():
-                # Ensure all comparisons are string-to-string
-                if str(sku).lower() in file['name'].lower() or str(variant_data['color']).lower() in file['name'].lower():
+                if str(sku).lower() in file['name'].lower() or (variant_data.get('color') and str(variant_data['color']).lower() in file['name'].lower()):
                     variant_data['files'][doc_type] = file_data
                     associated = True
                     break
+            
             if not associated:
                 if "unassociated" not in self.product_data: self.product_data["unassociated"] = []
                 self.product_data["unassociated"].append(file_data)
-        
         return self.product_data
 
-# --- Artwork Validator ---
+# --- Artwork Validator (with NEW checks) ---
 class ArtworkValidator:
     def __init__(self, product_data):
         self.product_data = product_data
@@ -210,6 +206,7 @@ class ArtworkValidator:
         return [('passed', f'"Made in China" present on {doc_type_name}: {filename}', f'{doc_type_name}_origin_ok')]
 
     def _validate_serials_for_variant(self, variant):
+        # ... (serial validation remains the same)
         results = []
         all_files = list(variant['files'].values()) + list(self.product_data['shared_files'].values())
         all_text = " ".join([d.get('text', '') for d in all_files])
@@ -231,6 +228,24 @@ class ArtworkValidator:
                 results.append(('passed', f"UPC {upc} found in packaging QR for variant {variant['sku']}", f"qr_ok_{upc}"))
         return results
 
+    def _validate_elements_and_consistency(self, variant):
+        results = []
+        qc_sheet = variant['files'].get('qc_sheet', {})
+        packaging = variant['files'].get('packaging_artwork', {})
+
+        # NEW: Check for missing QR code on packaging
+        if packaging and not packaging.get('qr_data'):
+            results.append(('warning', f"No QR code detected on packaging for {variant['sku']}", f"missing_qr_{variant['sku']}"))
+
+        # NEW: Check for logo color consistency
+        logo_color_spec = qc_sheet.get('logo_color')
+        if logo_color_spec and packaging:
+            if logo_color_spec.lower() not in packaging.get('text', '').lower():
+                results.append(('warning', f"Logo color mismatch for {variant['sku']}? QC sheet specifies '{logo_color_spec}', but it's not mentioned in the packaging text.", f"logo_color_{variant['sku']}"))
+
+        return results
+
+
     def validate_all(self):
         all_results = []
         for sku, variant in self.product_data['variants'].items():
@@ -240,9 +255,13 @@ class ArtworkValidator:
             for doc_type, file_data in variant['files'].items():
                 if doc_type == 'packaging_artwork':
                     variant_results.extend(self._validate_origin(file_data['text'], file_data['filename'], 'packaging'))
+            
             variant_results.extend(self._validate_serials_for_variant(variant))
+            variant_results.extend(self._validate_elements_and_consistency(variant)) # Add new checks
+
             for res in variant_results:
                 all_results.append((res[0], res[1], res[2], sku))
+        
         if 'washtag' in self.product_data['shared_files']:
             wt_file = self.product_data['shared_files']['washtag']
             for res in self._validate_origin(wt_file['text'], wt_file['filename'], 'washtag'):
@@ -251,6 +270,7 @@ class ArtworkValidator:
 
 # --- UI Components ---
 def display_header():
+    # ... (header remains the same)
     st.markdown("""
     <style>
         .main-header { padding: 1.5rem; background-color: #0891b2; border-radius: 10px; text-align: center; margin-bottom: 2rem; color: white; }
@@ -266,6 +286,7 @@ def display_header():
     """, unsafe_allow_html=True)
 
 def display_results(results):
+    # ... (results display remains the same)
     results_by_variant = {}
     for status, msg, res_id, variant_sku in results:
         if variant_sku not in results_by_variant: results_by_variant[variant_sku] = []
@@ -279,6 +300,7 @@ def display_results(results):
                 st.markdown(f'<div class="{box_class}">{icon} {msg}</div>', unsafe_allow_html=True)
 
 def display_ai_review(ai_reviews):
+    # ... (AI review display remains the same)
     st.markdown("---")
     st.header("🤖 AI-Powered Review")
     st.warning("""
@@ -296,8 +318,6 @@ def main():
 
     if 'validation_complete' not in st.session_state:
         st.session_state.validation_complete = False
-    if 'ai_reviews' not in st.session_state:
-        st.session_state.ai_reviews = []
 
     with st.sidebar:
         st.header("🚀 Actions")
@@ -305,7 +325,7 @@ def main():
         
         st.markdown("---")
         st.header("🤖 AI-Powered Review (Optional)")
-        enable_ai_review = st.toggle("Enable AI Review", value=False, help="Use an AI to provide a summary of findings. Requires API keys.")
+        enable_ai_review = st.toggle("Enable AI Review", value=False)
         
         ai_provider = None
         if enable_ai_review:
@@ -317,17 +337,25 @@ def main():
                 selected_provider = st.selectbox("Choose AI Provider", options=list(provider_options.keys()))
                 ai_provider = provider_options[selected_provider]
             else:
-                st.error("No API keys found in secrets. Please add `openai_api_key` or `anthropic_api_key` to your secrets.toml file.")
-
+                st.error("No API keys found in secrets.")
+        
         if st.button("Clear & Reset"):
             st.session_state.clear()
             st.rerun()
+
+    # NEW: Friendly Reminders section
+    st.markdown("### 📝 Friendly Reminders & Manual Checks")
+    st.info("Based on past issues, please manually double-check the following points in your artwork files:")
+    st.checkbox("Is the **Country of Origin** correct on all packaging and labels?", key="check1")
+    st.checkbox("Does the **Logo Color** match the specification in the QC sheet for each variant?", key="check2")
+    st.checkbox("Are all required **QR codes** present and correctly formatted?", key="check3")
+    st.checkbox("Do the **dimensions** on tags and labels match the QC sheet specifications?", key="check4")
 
     uploaded_files = st.file_uploader("Upload all artwork & QC files for your product", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if run_validation and uploaded_files:
         files_to_process = [{"buffer": file, "name": file.name, "type": file.type} for file in uploaded_files]
-        with st.spinner("Building product data structure..."):
+        with st.spinner("Processing files and building product structure..."):
             builder = ProductDataBuilder(files_to_process)
             product_data = builder.build()
             st.session_state.product_data = product_data
@@ -347,14 +375,15 @@ def main():
                     st.session_state.ai_reviews.append(summary)
 
     if st.session_state.validation_complete:
-        st.header("📊 Validation Report")
+        st.header("📊 Automated Validation Report")
         display_results(st.session_state.results)
         
-        if st.session_state.ai_reviews:
+        if st.session_state.get('ai_reviews'):
             display_ai_review(st.session_state.ai_reviews)
             
         st.header("📄 Data Structure Preview")
         with st.expander("Click to see how files were grouped"):
+            # ... (preview logic remains the same)
             preview_data = {}
             p_data = st.session_state.product_data
             for sku, variant in p_data.get('variants', {}).items():
