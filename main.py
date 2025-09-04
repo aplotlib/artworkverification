@@ -1,4 +1,5 @@
 import streamlit as st
+import time
 from config import AppConfig
 from file_processor import DocumentProcessor
 from validator import ArtworkValidator
@@ -13,6 +14,9 @@ from ui_components import (
     display_chat_interface
 )
 
+# --- Security: Rate Limiting Constants ---
+VERIFICATION_COOLDOWN_SECONDS = 10
+
 def initialize_session_state():
     """Initializes the session state variables."""
     st.session_state.setdefault('validation_complete', False)
@@ -24,13 +28,13 @@ def initialize_session_state():
     st.session_state.setdefault('compliance_results', [])
     st.session_state.setdefault('processed_docs', [])
     st.session_state.setdefault('uploaded_files_data', [])
-    st.session_state.setdefault('messages', []) # For chat history
+    st.session_state.setdefault('messages', []) 
+    st.session_state.setdefault('last_verification_time', 0) # For rate limiting
 
 def main():
     st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
     initialize_session_state()
 
-    # This block handles the AI processing after files are processed and validated.
     if st.session_state.get('run_ai_processing'):
         st.session_state.run_ai_processing = False
         api_keys = check_api_keys()
@@ -63,34 +67,37 @@ def main():
     uploaded_files = display_file_uploader()
 
     if run_validation:
-        # --- Handle case with no files uploaded ---
-        if not uploaded_files:
-            st.session_state.validation_complete = True
-            st.session_state.processed_docs = [] # Ensure processed docs is empty
+        current_time = time.time()
+        # --- Security: Verification Rate Limiting ---
+        if current_time - st.session_state.last_verification_time < VERIFICATION_COOLDOWN_SECONDS:
+            st.toast(f"Please wait {VERIFICATION_COOLDOWN_SECONDS} seconds before running another verification.", icon="⏳")
         else:
-            st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
-            st.session_state.custom_instructions = custom_instructions
-            st.session_state.reference_text = reference_text
+            st.session_state.last_verification_time = current_time
+            if not uploaded_files:
+                st.session_state.validation_complete = True
+                st.session_state.processed_docs = []
+            else:
+                st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+                st.session_state.custom_instructions = custom_instructions
+                st.session_state.reference_text = reference_text
 
-            with st.spinner("Running rule-based checks..."):
-                processor = DocumentProcessor(st.session_state.uploaded_files_data)
-                st.session_state.processed_docs, st.session_state.skus = processor.process_files()
-                all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
-                validator = ArtworkValidator(all_text)
-                st.session_state.global_results, st.session_state.per_doc_results = validator.validate(st.session_state.processed_docs)
+                with st.spinner("Running rule-based checks..."):
+                    processor = DocumentProcessor(st.session_state.uploaded_files_data)
+                    st.session_state.processed_docs, st.session_state.skus = processor.process_files()
+                    all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
+                    validator = ArtworkValidator(all_text)
+                    st.session_state.global_results, st.session_state.per_doc_results = validator.validate(st.session_state.processed_docs)
+                
+                st.session_state.validation_complete = True
+                st.session_state.run_ai_processing = True
             
-            st.session_state.validation_complete = True
-            st.session_state.run_ai_processing = True
-        
-        st.rerun()
+            st.rerun()
 
-    # The results page is now displayed conditionally
     if st.session_state.validation_complete:
         display_results_page(**st.session_state)
         display_pdf_previews(st.session_state.uploaded_files_data)
 
     st.divider()
-    # The chat interface is always displayed at the bottom
     display_chat_interface()
 
 if __name__ == "__main__":
