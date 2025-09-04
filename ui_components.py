@@ -11,9 +11,10 @@ def display_header():
 def display_instructions():
     with st.expander("📖 How to Use This Tool"):
         st.markdown("""
-        **1. Upload Files**: Drag and drop all related artwork files for a single product.
-        **2. Configure (Optional)**: In the sidebar, add any specific text for the AI to check for.
-        **3. Run Verification**: Click the button to start. Results will appear below as they are generated.
+        **1. Upload Files**: Drag and drop all related artwork files for a single product to run a verification report.
+        **2. Chat with AI**: Use the chat interface at the bottom to ask general questions about medical device packaging at any time.
+        **3. Configure (Optional)**: In the sidebar, add any specific text for the AI to check for during file verification.
+        **4. Run Verification**: Click the button to start. Results will appear below as they are generated.
         """)
 
 def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
@@ -22,7 +23,7 @@ def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
         run_validation = st.button("🔍 Run Verification", type="primary")
         st.header("📝 AI Compliance Check")
         reference_text = st.text_area(
-            "Enter text for the AI to verify, one phrase per line.",
+            "Enter text for the AI to verify in uploaded files, one phrase per line.",
             placeholder="Made in China\n1-year warranty"
         )
         st.header("🤖 AI Custom Summary")
@@ -39,6 +40,11 @@ def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFil
 
 def display_results_page(global_results: List, per_doc_results: Dict, processed_docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List, **kwargs):
     st.header("📊 Verification Report")
+
+    # Display a message if verification was run without files
+    if not processed_docs:
+        st.warning("No files were uploaded. The verification report is empty.")
+        return
 
     with st.container(border=True):
         total_failures = len([r for r in global_results if r[0] == 'failed']) + \
@@ -89,6 +95,7 @@ def display_results_page(global_results: List, per_doc_results: Dict, processed_
 
 def display_pdf_previews(files: List[Dict[str, Any]]):
     """Renders PDF pages as images for reliable in-browser previewing."""
+    if not files: return
     st.header("📄 PDF Previews")
     pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
     if pdf_files:
@@ -103,3 +110,29 @@ def display_pdf_previews(files: List[Dict[str, Any]]):
                     doc.close()
                 except Exception as e:
                     st.error(f"Could not render preview for {pdf_file['name']}. Error: {e}")
+
+def display_chat_interface():
+    """Displays the standalone AI chat interface."""
+    st.header("💬 Chat with AI Assistant")
+    st.caption("Ask me anything about medical device packaging, labeling, or compliance.")
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("What is a UDI?"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                api_keys = check_api_keys()
+                reviewer = AIReviewer(api_keys)
+                response = reviewer.run_chatbot_interaction(st.session_state.messages)
+                st.markdown(response)
+        
+        st.session_state.messages.append({"role": "assistant", "content": response})
