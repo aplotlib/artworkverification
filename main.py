@@ -9,7 +9,8 @@ from ui_components import (
     display_sidebar,
     display_file_uploader,
     display_results_page,
-    display_pdf_previews
+    display_pdf_previews,
+    display_chat_interface
 )
 
 def initialize_session_state():
@@ -23,11 +24,13 @@ def initialize_session_state():
     st.session_state.setdefault('compliance_results', [])
     st.session_state.setdefault('processed_docs', [])
     st.session_state.setdefault('uploaded_files_data', [])
+    st.session_state.setdefault('messages', []) # For chat history
 
 def main():
     st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
     initialize_session_state()
 
+    # This block handles the AI processing after files are processed and validated.
     if st.session_state.get('run_ai_processing'):
         st.session_state.run_ai_processing = False
         api_keys = check_api_keys()
@@ -59,25 +62,36 @@ def main():
     run_validation, custom_instructions, reference_text = display_sidebar(api_keys)
     uploaded_files = display_file_uploader()
 
-    if run_validation and uploaded_files:
-        st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
-        st.session_state.custom_instructions = custom_instructions
-        st.session_state.reference_text = reference_text
+    if run_validation:
+        # --- Handle case with no files uploaded ---
+        if not uploaded_files:
+            st.session_state.validation_complete = True
+            st.session_state.processed_docs = [] # Ensure processed docs is empty
+        else:
+            st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+            st.session_state.custom_instructions = custom_instructions
+            st.session_state.reference_text = reference_text
 
-        with st.spinner("Running rule-based checks..."):
-            processor = DocumentProcessor(st.session_state.uploaded_files_data)
-            st.session_state.processed_docs, st.session_state.skus = processor.process_files()
-            all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
-            validator = ArtworkValidator(all_text) # No longer needs reference_text
-            st.session_state.global_results, st.session_state.per_doc_results = validator.validate(st.session_state.processed_docs)
+            with st.spinner("Running rule-based checks..."):
+                processor = DocumentProcessor(st.session_state.uploaded_files_data)
+                st.session_state.processed_docs, st.session_state.skus = processor.process_files()
+                all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
+                validator = ArtworkValidator(all_text)
+                st.session_state.global_results, st.session_state.per_doc_results = validator.validate(st.session_state.processed_docs)
+            
+            st.session_state.validation_complete = True
+            st.session_state.run_ai_processing = True
         
-        st.session_state.validation_complete = True
-        st.session_state.run_ai_processing = True
         st.rerun()
 
+    # The results page is now displayed conditionally
     if st.session_state.validation_complete:
         display_results_page(**st.session_state)
         display_pdf_previews(st.session_state.uploaded_files_data)
+
+    st.divider()
+    # The chat interface is always displayed at the bottom
+    display_chat_interface()
 
 if __name__ == "__main__":
     main()
