@@ -18,89 +18,74 @@ def check_api_keys() -> Dict[str, str]:
     return keys
 
 class AIReviewer:
-    """Handles all communication with the AI APIs, including a two-stage analysis."""
+    """Handles a multi-agent AI workflow for sophisticated artwork analysis."""
 
     def __init__(self, api_keys: Dict[str, str]):
         self.api_keys = api_keys
         self.openai_client = openai.OpenAI(api_key=api_keys.get('openai')) if 'openai' in api_keys else None
-        self.anthropic_client = anthropic.Anthropic(api_key=api_keys.get('anthropic')) if 'anthropic' in api_keys else None
 
     def run_ai_fact_extraction(self, text: str) -> Dict[str, Any]:
         """Uses an AI to correct OCR errors and extract key facts into a structured JSON."""
         if not self.openai_client: return {"error": "OpenAI API key not found."}
-        
-        prompt = f"""
-        You are an expert data extraction OCR agent. The following is raw text extracted from a product packaging file. 
-        Your task is to correct any OCR errors and extract the key information into a structured JSON object.
-        Extract the following fields: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', and 'Dimensions'.
-        If a field is not present, the value should be null.
-        
-        TEXT TO ANALYZE:
-        ---
-        {text}
-        ---
-        
-        Respond with ONLY the JSON object.
-        """
+        prompt = f"""You are an expert data extraction agent. From the following raw text, correct any OCR errors and extract the key information into a JSON object. Extract: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', 'Dimensions', and 'MaterialComposition'. If a field is not present, use null. TEXT TO ANALYZE: --- {text} --- Respond with ONLY the JSON object."""
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                response_format={"type": "json_object"}
+                model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
+                temperature=0, response_format={"type": "json_object"}
             )
             return json.loads(response.choices[0].message.content)
         except Exception as e:
             return {"error": f"AI Fact Extraction Failed: {e}"}
 
-    def _create_batches(self, docs: List[Dict[str, Any]]) -> List[str]:
-        """Creates text batches from documents to respect API context limits."""
-        # ... (implementation remains the same as previous version)
-        batches, current_batch = [], ""
-        for doc in docs:
-            doc_text = f"--- File: {doc['filename']} ---\n{doc['text']}"
-            if len(current_batch) + len(doc_text) > AppConfig.AI_BATCH_MAX_CHARS:
-                if current_batch: batches.append(current_batch)
-                current_batch = doc_text
-            else:
-                current_batch += "\n\n" + doc_text
-        if current_batch: batches.append(current_batch)
-        return batches
+    def run_ai_compliance_check(self, facts: Dict[str, Any], required_text: str) -> List[Dict[str, str]]:
+        """Uses AI to check for the presence of required phrases against the extracted facts."""
+        if not self.openai_client or not required_text: return []
+        prompt = f"""You are a compliance bot. Given the JSON facts extracted from a document, verify if each of the following required phrases is present or can be inferred. For each phrase, provide a 'status' ('Pass' or 'Fail') and brief 'reasoning'.
+        JSON FACTS: {json.dumps(facts)}
+        REQUIRED PHRASES: --- {required_text} ---
+        Respond with ONLY a JSON list of objects, where each object has 'phrase', 'status', and 'reasoning' keys."""
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
+                temperature=0, response_format={"type": "json_object"}
+            )
+            # The model might return the list under a key, so we handle that.
+            response_data = json.loads(response.choices[0].message.content)
+            if isinstance(response_data, dict):
+                # Look for the list within the dictionary
+                for key, value in response_data.items():
+                    if isinstance(value, list):
+                        return value
+            elif isinstance(response_data, list):
+                return response_data
+            return [] # Return empty if format is unexpected
+        except Exception as e:
+            return [{"phrase": "AI Compliance Check", "status": "Fail", "reasoning": str(e)}]
 
-    def generate_summary(self, docs: List[Dict[str, Any]], custom_instructions: str) -> str:
-        """Processes documents in batches and returns a single, synthesized summary."""
-        if not self.anthropic_client or not self.openai_client: return "Missing API keys for AI analysis."
+    def generate_executive_summary(self, docs: List[Dict[str, Any]], rule_results: List, compliance_results: List, custom_instructions: str) -> str:
+        """Generates a final summary synthesizing all previous analysis stages."""
+        if not self.openai_client: return "OpenAI API key not found."
+        
+        # Create a condensed text bundle for the final summary
+        text_bundle = "\n\n".join([f"--- File: {d['filename']} ({d['file_nature']}) ---\n{d['text'][:1000]}..." for d in docs])
+        
+        prompt = f"""You are a Senior QA Manager providing a final artwork verification report.
+        
+        **User's Special Instructions:** "{custom_instructions or 'None'}"
 
-        batches = self._create_batches(docs)
-        if not batches: return "No text was extracted from the documents to review."
-        
-        all_reviews = []
-        for i, batch in enumerate(batches):
-            prompt = f"""You are a QA specialist. Review the following artwork text. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues like missing 'Made in China' text. {custom_instructions}. Present findings as a bulleted list, citing the filename for each point.\n\n---DATA---\n{batch}\n---END DATA---"""
-            try:
-                response = self.anthropic_client.messages.create(
-                    model="claude-3-haiku-20240307", max_tokens=2048, 
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                all_reviews.append(response.content[0].text)
-            except Exception as e:
-                all_reviews.append(f"Anthropic API Error in batch {i+1}: {e}")
-            time.sleep(1)
+        **Analysis Data:**
+        1. Rule-Based Checks: {json.dumps(rule_results)}
+        2. AI Compliance Checks: {json.dumps(compliance_results)}
+        3. Raw Text Bundle (abbreviated): {text_bundle}
 
-        final_prompt = f"""You are a senior QA manager. Consolidate the following individual analysis reports into a single, final summary.
-        - For each finding, you MUST cite the source filename.
-        - Do not mention 'batches' or 'reports'.
-        - Structure the response using markdown with clear headings.
-        - Custom instructions to address: {custom_instructions or 'None'}
-        
-        ---REPORTS TO SYNTHESIZE---\n{"\n\n---\n\n".join(all_reviews)}\n---END REPORTS---
-        
-        Provide your final, consolidated review below.
+        **Your Task:**
+        1.  **Address Instructions First:** Start your response with a direct answer to the user's special instructions.
+        2.  **Write Executive Summary:** Following that, provide a holistic summary of all findings. Synthesize the rule-based and AI compliance checks with your own review of the text. Use clear headings, bullet points, and bold text to highlight key information and discrepancies.
         """
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o", messages=[{"role": "user", "content": final_prompt}], temperature=0
+                model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.1
             )
             return response.choices[0].message.content
         except Exception as e:
-            return f"OpenAI API Error during final synthesis: {e}"
+            return f"OpenAI API Error during final summary: {e}"
