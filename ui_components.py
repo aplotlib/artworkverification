@@ -82,3 +82,24 @@ def display_results_page(global_results: List, per_doc_results: Dict, docs: List
                     with st.expander(f"**{doc['filename']}** ({nature_tag})"):
                         if doc['doc_type'] == 'packaging_artwork' and ai_facts:
                             st.markdown("**AI Fact Extraction:**"); st.json(ai_facts)
+                        
+                        text_preview = doc['text']
+                        if len(text_preview) > 2000: text_preview = text_preview[:2000] + "\n\n... (text truncated)"
+                        st.text_area("Extracted Text Preview", text_preview, height=250, key=f"text_{doc['filename']}", label_visibility="collapsed")
+
+def display_pdf_previews(files: List[Dict[str, Any]]):
+    """Renders PDF pages as images for reliable in-browser previewing."""
+    st.header("📄 PDF Previews")
+    pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
+    if pdf_files:
+        for pdf_file in pdf_files:
+            with st.expander(f"View Preview: {pdf_file['name']}"):
+                try:
+                    doc = fitz.open(stream=pdf_file['bytes'], filetype="pdf")
+                    for page_num in range(len(doc)):
+                        page = doc.load_page(page_num)
+                        pix = page.get_pixmap()
+                        st.image(pix.tobytes("png"), caption=f"Page {page_num + 1}", use_container_width=True)
+                    doc.close()
+                except Exception as e:
+                    st.error(f"Could not render preview for {pdf_file['name']}. Error: {e}")
