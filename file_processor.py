@@ -30,7 +30,6 @@ class DocumentProcessor:
         try:
             with fitz.open(stream=file_bytes, filetype="pdf") as doc:
                 for page_num, page in enumerate(doc):
-                    # Use OCR on a high-resolution image of the page for accuracy
                     pix = page.get_pixmap(dpi=300)
                     with Image.open(BytesIO(pix.tobytes("png"))) as img:
                         page_text = pytesseract.image_to_string(img)
@@ -40,18 +39,14 @@ class DocumentProcessor:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    def _extract_from_qc_sheet(self, file_bytes: bytes) -> Dict[str, Any]:
-        """Robustly extracts SKU from a QC sheet (CSV/XLSX)."""
-        try:
-            df = pd.read_csv(BytesIO(file_bytes), dtype=str, header=None).fillna('')
-            np_array = df.to_numpy()
-            for row_idx, row in enumerate(np_array):
-                for col_idx, cell in enumerate(row):
-                    if "PRODUCT SKU CODE" in str(cell).upper().strip() and (col_idx + 2) < len(row):
-                        return {'success': True, 'sku': np_array[row_idx, col_idx + 2], 'text': df.to_string()}
-            return {'success': False, 'error': "Could not find 'PRODUCT SKU CODE'."}
-        except Exception as e:
-            return {'success': False, 'error': f"Could not parse QC Sheet: {e}"}
+    def _find_sku_in_dataframe(self, df: pd.DataFrame) -> str | None:
+        """Finds the Product SKU Code in a given DataFrame."""
+        np_array = df.to_numpy()
+        for row_idx, row in enumerate(np_array):
+            for col_idx, cell in enumerate(row):
+                if "PRODUCT SKU CODE" in str(cell).upper().strip() and (col_idx + 2) < len(row):
+                    return np_array[row_idx, col_idx + 2]
+        return None
 
     def process_files(self) -> Tuple[List[Dict[str, Any]], List[str]]:
         """Processes all files, classifies them, extracts text, and finds SKUs."""
@@ -69,11 +64,29 @@ class DocumentProcessor:
                 if result.get('success'):
                     file_content = result.get('text', '')
             
-            elif file_name.lower().endswith(('.csv', '.xlsx')):
-                file_content = BytesIO(file_bytes).read().decode('utf-8', errors='ignore')
-                qc_data = self._extract_from_qc_sheet(file_bytes)
-                if qc_data.get('success'):
-                    all_skus.add(qc_data.get('sku'))
+            elif file_name.lower().endswith('.csv'):
+                try:
+                    df = pd.read_csv(BytesIO(file_bytes), header=None).fillna('')
+                    file_content = df.to_string()
+                    sku = self._find_sku_in_dataframe(df)
+                    if sku: all_skus.add(sku)
+                except Exception as e:
+                    file_content = f"Error reading CSV file: {e}"
+
+            elif file_name.lower().endswith('.xlsx'):
+                try:
+                    xls = pd.read_excel(BytesIO(file_bytes), sheet_name=None, header=None)
+                    all_sheets_text = []
+                    # Assume SKU is on the first sheet for QC purposes
+                    first_sheet_name = list(xls.keys())[0]
+                    sku = self._find_sku_in_dataframe(xls[first_sheet_name].fillna(''))
+                    if sku: all_skus.add(sku)
+                    
+                    for sheet_name, df in xls.items():
+                        all_sheets_text.append(f"--- Sheet: {sheet_name} ---\n{df.to_string()}")
+                    file_content = "\n\n".join(all_sheets_text)
+                except Exception as e:
+                    file_content = f"Error reading XLSX file: {e}"
 
             processed_docs.append({'filename': file_name, 'text': file_content, 'doc_type': doc_type})
             
