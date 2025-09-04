@@ -37,7 +37,7 @@ def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFil
     return st.file_uploader("Upload all artwork files for one product (PDF, CSV, XLSX)",
                              type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
 
-def display_results_page(global_results: List, per_doc_results: Dict, docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List):
+def display_results_page(global_results: List, per_doc_results: Dict, processed_docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List, **kwargs):
     st.header("📊 Verification Report")
 
     with st.container(border=True):
@@ -57,7 +57,7 @@ def display_results_page(global_results: List, per_doc_results: Dict, docs: List
 
     st.header("🔍 Details & Inspector")
     with st.container(border=True):
-        tab_titles = ["📋 Reports & Checks"] + sorted(defaultdict(list, {d['doc_type'].replace('_', ' ').title(): [] for d in docs}).keys())
+        tab_titles = ["📋 Reports & Checks"] + sorted(defaultdict(list, {d['doc_type'].replace('_', ' ').title(): [] for d in processed_docs}).keys())
         tabs = st.tabs(tab_titles)
 
         with tabs[0]:
@@ -74,7 +74,7 @@ def display_results_page(global_results: List, per_doc_results: Dict, docs: List
                 st.markdown(f"{'✅' if status == 'passed' else '❌'} {msg}")
 
         docs_by_type = defaultdict(list)
-        for doc in docs: docs_by_type[doc['doc_type'].replace('_', ' ').title()].append(doc)
+        for doc in processed_docs: docs_by_type[doc['doc_type'].replace('_', ' ').title()].append(doc)
         for i, title in enumerate(sorted(docs_by_type.keys())):
             with tabs[i + 1]:
                 for doc in docs_by_type[title]:
