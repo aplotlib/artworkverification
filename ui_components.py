@@ -113,7 +113,7 @@ def display_pdf_previews(files: List[Dict[str, Any]]):
                         st.image(
                             img_bytes, 
                             caption=f"Page {page_num + 1} of {len(doc)}",
-                            use_column_width='auto'
+                            use_container_width=True
                         )
                     doc.close()
                 except Exception as e:
