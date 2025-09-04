@@ -15,4 +15,4 @@ class AppConfig:
     }
     
     # AI configuration
-    AI_BATCH_MAX_CHARS = 15000  # Max characters per API call to avoid limits
+    AI_BATCH_MAX_CHARS = 10000  # Max characters per API call to avoid limits
