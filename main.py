@@ -10,6 +10,7 @@ from pyzbar.pyzbar import decode as qr_decode
 import openai
 import anthropic
 import time
+import base64
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -148,8 +149,7 @@ class ArtworkValidator:
 
 # --- NEW: Batching Function ---
 def create_batches(docs, max_chars=15000):
-    batches = []
-    current_batch_text = ""
+    batches, current_batch_text = [], ""
     for doc in docs:
         doc_text = f"--- File: {doc['filename']} ---\n{doc['text']}"
         if len(current_batch_text) + len(doc_text) > max_chars:
@@ -176,7 +176,12 @@ def display_report(results, skus):
 def main():
     st.markdown("<h1>Artwork Verification Tool</h1>", unsafe_allow_html=True)
     api_keys = check_api_keys()
-    if 'validation_complete' not in st.session_state: st.session_state.validation_complete = False
+    
+    # Initialize session state
+    if 'validation_complete' not in st.session_state:
+        st.session_state.validation_complete = False
+    if 'run_ai_review' not in st.session_state:
+        st.session_state.run_ai_review = False
 
     with st.sidebar:
         st.header("⚙️ Controls")
@@ -222,11 +227,12 @@ def main():
             validator = ArtworkValidator(all_text_bundle)
             st.session_state.results = validator.validate()
             st.session_state.validation_complete = True
-            st.session_state.run_ai_review = True
+            st.session_state.run_ai_review = True # Set flag to run AI on the next rerun
             st.rerun()
 
+    # This block runs AFTER the main validation to prevent rate limit issues
     if st.session_state.get('run_ai_review'):
-        st.session_state.run_ai_review = False
+        st.session_state.run_ai_review = False # Unset flag
         if ai_provider and st.session_state.get('processed_docs'):
             st.header("🤖 AI-Powered Review")
             st.warning("⚠️ **AI Review is Experimental.** Always rely on the rule-based validation and perform a final human review.")
@@ -256,7 +262,15 @@ def main():
             st.header("📄 PDF Previews")
             for pdf_file in pdf_files:
                 with st.expander(f"View: {pdf_file['name']}"):
-                    st.pdf(pdf_file['bytes'])
+                    # Using a function to display PDF from bytes
+                    st.write(f"Displaying PDF: {pdf_file['name']}")
+                    try:
+                        base64_pdf = base64.b64encode(pdf_file['bytes']).decode('utf-8')
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="1000" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Could not display PDF: {e}")
+
 
         with st.expander("📄 View Combined Extracted Text"):
             all_text = "\n\n".join(d['text'] for d in st.session_state.get('processed_docs', []))
