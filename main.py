@@ -64,6 +64,14 @@ class AIReviewer:
             response = self.openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0)
             return response.choices[0].message.content
         except Exception as e: return f"OpenAI API Error: {e}"
+    
+    def _get_single_review(self, client_type, text_bundle, custom_instructions):
+        prompt = f"You are a QA specialist. Review the artwork text. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues. {custom_instructions}. Present findings as a bulleted list. Start with '### AI Review'.\n\n---DATA---\n{text_bundle}\n---END DATA---"
+        if client_type == 'openai' and self.openai_client:
+            return self._get_openai_synthesis(text_bundle, "", custom_instructions) # Use synthesis prompt for consistency
+        elif client_type == 'anthropic' and self.anthropic_client:
+            return self._get_anthropic_review(text_bundle, custom_instructions)
+        return f"{client_type.capitalize()} API key not found."
 
     def generate_summary(self, provider, text_bundle, custom_instructions):
         cust_instr = f"Pay special attention to the user's instructions: '{custom_instructions}'" if custom_instructions else ""
@@ -71,12 +79,8 @@ class AIReviewer:
             anthropic_review = self._get_anthropic_review(text_bundle, cust_instr)
             final_summary = self._get_openai_synthesis(text_bundle, anthropic_review, cust_instr)
             return final_summary
-        elif provider == 'anthropic':
-            return self._get_anthropic_review(text_bundle, cust_instr)
-        # Default to OpenAI if it's the only one or selected
         else:
-            prompt = f"You are a QA specialist. Review the artwork text. Check for consistency in Product Name, SKU, UPC, and UDI. Flag issues. {cust_instr}. Present findings as a bulleted list. Start with '### AI Review'.\n\n---DATA---\n{text_bundle}\n---END DATA---"
-            return self._get_summary('openai', prompt)
+            return self._get_single_review(provider, text_bundle, cust_instr)
 
 # --- File Processing ---
 class DocumentProcessor:
@@ -165,7 +169,7 @@ def main():
         st.header("⚙️ Controls")
         run_validation = st.button("🔍 Run Validation", type="primary")
         
-        st.header("🤖 AI Review")
+        st.header("🤖 AI Review Configuration")
         custom_instructions = st.text_area("Custom Instructions for AI (Optional)", help="Guide the AI's focus, e.g., 'Check for a 1-year warranty statement.'")
         
         options = {"Select AI Provider...": None}
@@ -195,7 +199,7 @@ def main():
     uploaded_files = st.file_uploader("Upload all artwork files for one product", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if run_validation and uploaded_files:
-        files = [{"buffer": BytesIO(file.getvalue()), "name": file.name} for file in uploaded_files]
+        files = [{"buffer": BytesIO(file.getvalue()), "name": file.name, "bytes": file.getvalue()} for file in uploaded_files]
         
         with st.spinner("Analyzing all documents..."):
             processor = DocumentProcessor(files)
@@ -219,6 +223,15 @@ def main():
         if st.session_state.ai_review_summary:
             st.markdown("---"); st.header("🤖 AI-Powered Review")
             st.markdown(st.session_state.ai_review_summary, unsafe_allow_html=True)
+        
+        # Display PDFs
+        pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
+        if pdf_files:
+            st.header("📄 PDF Previews")
+            for pdf_file in pdf_files:
+                with st.expander(f"View: {pdf_file['name']}"):
+                    st.pdf(pdf_file['bytes'])
+
         with st.expander("📄 View Combined Extracted Text"):
             st.text_area("", st.session_state.all_text_bundle, height=300)
 
