@@ -51,8 +51,6 @@ class AIReviewer:
             )
             response_data = json.loads(response.choices[0].message.content)
             
-            # --- AI Reliability Enhancement ---
-            # Handle cases where the model wraps the list in a dictionary
             if isinstance(response_data, dict):
                 for key, value in response_data.items():
                     if isinstance(value, list):
@@ -60,7 +58,7 @@ class AIReviewer:
             elif isinstance(response_data, list):
                 return response_data
             
-            return [] # Return empty if format is unexpected
+            return [] 
         except Exception as e:
             return [{"phrase": "AI Compliance Check", "status": "Fail", "reasoning": str(e)}]
 
@@ -100,7 +98,10 @@ class AIReviewer:
             "content": "You are a helpful assistant specializing in medical device packaging, labeling, and regulatory compliance. Answer questions clearly and concisely. You can talk about FDA regulations, UDI requirements, ISO standards, materials, and design best practices."
         }
         
-        messages = [system_prompt] + history
+        # --- Security: Chat History Capping ---
+        # Only include the system prompt and the last 10 messages to keep API costs down.
+        capped_history = history[-10:]
+        messages = [system_prompt] + capped_history
         
         try:
             response = self.openai_client.chat.completions.create(
