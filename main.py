@@ -9,6 +9,7 @@ from typing import Dict, List, Any
 from pyzbar.pyzbar import decode as qr_decode
 import openai
 import anthropic
+import time
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -97,22 +98,25 @@ class DocumentProcessor:
             return {'success': False, 'error': str(e)}
 
     def process_files(self):
-        all_text, all_skus = [], set()
+        processed_docs = []
+        all_skus = set()
         for file in self.files:
             file_content = ""
             if file['name'].lower().endswith('.pdf'):
                 result = self._extract_from_pdf(file['buffer'])
                 if result['success']:
                     file_content = result['text']
+                    processed_docs.append({'filename': file['name'], 'text': file_content})
             elif file['name'].lower().endswith(('.csv', '.xlsx')):
                 file['buffer'].seek(0)
                 file_content = file['buffer'].read().decode('utf-8', errors='ignore')
+                processed_docs.append({'filename': file['name'], 'text': file_content})
             
-            all_text.append(f"--- File: {file['name']} ---\n{file_content}")
             skus_found = re.findall(r'([A-Z]{3,}\d{3,}[A-Z]*)', file_content, re.IGNORECASE)
             for sku in skus_found:
                 all_skus.add(sku.upper())
-        return "\n\n".join(all_text), list(all_skus)
+        
+        return processed_docs, list(all_skus)
 
 # --- Core Logic ---
 class ArtworkValidator:
@@ -142,6 +146,21 @@ class ArtworkValidator:
             
         return results
 
+# --- NEW: Batching Function ---
+def create_batches(docs, max_chars=15000):
+    batches = []
+    current_batch_text = ""
+    for doc in docs:
+        doc_text = f"--- File: {doc['filename']} ---\n{doc['text']}"
+        if len(current_batch_text) + len(doc_text) > max_chars:
+            batches.append(current_batch_text)
+            current_batch_text = doc_text
+        else:
+            current_batch_text += "\n\n" + doc_text
+    if current_batch_text:
+        batches.append(current_batch_text)
+    return batches
+
 # --- UI Components ---
 def display_report(results, skus):
     st.header("📊 Automated Validation Report")
@@ -157,12 +176,7 @@ def display_report(results, skus):
 def main():
     st.markdown("<h1>Artwork Verification Tool</h1>", unsafe_allow_html=True)
     api_keys = check_api_keys()
-    
-    # Initialize session state
-    if 'validation_complete' not in st.session_state:
-        st.session_state.validation_complete = False
-    if 'run_ai_review' not in st.session_state:
-        st.session_state.run_ai_review = False
+    if 'validation_complete' not in st.session_state: st.session_state.validation_complete = False
 
     with st.sidebar:
         st.header("⚙️ Controls")
@@ -197,37 +211,44 @@ def main():
     
     if run_validation and uploaded_files:
         st.session_state.files_to_process = [{"buffer": BytesIO(file.getvalue()), "name": file.name, "bytes": file.getvalue()} for file in uploaded_files]
-        st.session_state.reference_text = st.file_uploader("Reference Text File (.txt)", type=['txt']).read().decode("utf-8").strip() if 'ref_file' in st.session_state and st.session_state.ref_file else None
         
         with st.spinner("Analyzing all documents..."):
             processor = DocumentProcessor(st.session_state.files_to_process)
-            all_text_bundle, skus = processor.process_files()
-            st.session_state.all_text_bundle = all_text_bundle
+            processed_docs, skus = processor.process_files()
+            st.session_state.processed_docs = processed_docs
             st.session_state.skus = skus
             
-            validator = ArtworkValidator(all_text_bundle, st.session_state.reference_text)
+            all_text_bundle = "\n\n".join(d['text'] for d in processed_docs)
+            validator = ArtworkValidator(all_text_bundle)
             st.session_state.results = validator.validate()
             st.session_state.validation_complete = True
-            st.session_state.ai_review_summary = ""
-            st.session_state.run_ai_review = True # Set flag to run AI on the next rerun
+            st.session_state.run_ai_review = True
             st.rerun()
 
-    # This block runs AFTER the main validation to prevent rate limit issues
     if st.session_state.get('run_ai_review'):
-        st.session_state.run_ai_review = False # Unset flag
-        if ai_provider and st.session_state.get('all_text_bundle'):
-            with st.spinner("Sending data to AI for review..."):
-                reviewer = AIReviewer(api_keys)
-                summary = reviewer.generate_summary(ai_provider, st.session_state.all_text_bundle, custom_instructions)
-                st.session_state.ai_review_summary = summary
-                st.rerun()
+        st.session_state.run_ai_review = False
+        if ai_provider and st.session_state.get('processed_docs'):
+            st.header("🤖 AI-Powered Review")
+            st.warning("⚠️ **AI Review is Experimental.** Always rely on the rule-based validation and perform a final human review.")
+            
+            batches = create_batches(st.session_state.processed_docs)
+            progress_bar = st.progress(0, text="Starting AI review...")
+            all_summaries = []
+            reviewer = AIReviewer(api_keys)
+
+            for i, batch in enumerate(batches):
+                progress_bar.progress((i + 1) / len(batches), text=f"Processing Batch {i+1} of {len(batches)}...")
+                summary = reviewer.generate_summary(ai_provider, batch, custom_instructions)
+                all_summaries.append(summary)
+                time.sleep(1) # Add a delay to respect rate limits
+
+            st.session_state.ai_review_summary = "\n\n---\n\n".join(all_summaries)
+            st.rerun()
 
     if st.session_state.validation_complete:
         display_report(st.session_state.results, st.session_state.skus)
-        
-        if st.session_state.ai_review_summary:
-            st.markdown("---"); st.header("🤖 AI-Powered Review")
-            st.warning("⚠️ **AI Review is Experimental.** Always rely on the rule-based validation and perform a final human review.")
+        if st.session_state.get('ai_review_summary'):
+            st.header("🤖 AI-Powered Review Summary")
             st.markdown(st.session_state.ai_review_summary, unsafe_allow_html=True)
 
         pdf_files = [f for f in st.session_state.get('files_to_process', []) if f['name'].lower().endswith('.pdf')]
@@ -238,7 +259,8 @@ def main():
                     st.pdf(pdf_file['bytes'])
 
         with st.expander("📄 View Combined Extracted Text"):
-            st.text_area("", st.session_state.get('all_text_bundle', ''), height=300)
+            all_text = "\n\n".join(d['text'] for d in st.session_state.get('processed_docs', []))
+            st.text_area("Combined Extracted Text", all_text, height=300, label_visibility="collapsed")
 
 if __name__ == "__main__":
     main()
