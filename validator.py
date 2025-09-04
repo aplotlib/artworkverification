@@ -29,7 +29,9 @@ class ArtworkValidator:
             if not upcs:
                 results.append(('failed', "UDIs were found, but no matching 12-digit UPCs were detected.", "no_upcs"))
             for upc in upcs:
-                if not any(upc in udi for udi in udis):
+                # A 14-digit UDI (GTIN-14) often contains a 12-digit UPC padded with leading zeros.
+                # We check if the UPC is present in the last 12 digits of any found UDI.
+                if not any(upc in udi[2:] for udi in udis):
                     results.append(('failed', f"UPC `{upc}` does not have a matching UDI.", f"mismatch_{upc}"))
                 else:
                     results.append(('passed', f"UPC `{upc}` has a matching UDI.", f"match_{upc}"))
