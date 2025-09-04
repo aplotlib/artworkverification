@@ -49,12 +49,15 @@ def load_demo_files():
     """Loads the provided demo files into memory."""
     demo_files = {}
     file_paths = [
-        "wheelchair_bag_advanced_black_240625.pdf", "wheelchair_bag_advanced_purple_floral_240625.pdf",
-        "wheelchair_bag_advanced_quickstart_020625.pdf", "wheelchair_bag_black_shipping_mark.pdf",
-        "wheelchair_bag_logo_40mm_embroidered.pdf", "wheelchair_bag_purple_flower_shipping_mark.pdf",
-        "wheelchair_bag_tag_black_250625.pdf", "wheelchair_bag_tag_purple_250625.pdf",
-        "wheelchair_bag_washtag.pdf", "Wheelchair Bag Advanced 020625.xlsx - Black.csv",
-        "Wheelchair Bag Advanced 020625.xlsx - Purple Floral.csv"
+        "wheelchair_bag_washtag.pdf",
+        "wheelchair_bag_tag_purple_250625.pdf",
+        "Wheelchair Bag Advanced 020625.xlsx - Black.csv",
+        "Wheelchair Bag Advanced 020625.xlsx - Purple Floral.csv",
+        "Copy of wheelchair_bag_advanced_purple_floral_240625.pdf",
+        "Copy of wheelchair_bag_advanced_quickstart_020625.pdf",
+        "Copy of Wheelchair_Bag_Black_Shipping_Mark.pdf",
+        "Copy of wheelchair_bag_purple_flower_shipping_mark.pdf",
+        "Copy of wheelchair_bag_tag_black_250625.pdf"
     ]
     for filename in file_paths:
         try:
