@@ -1,9 +1,16 @@
 import streamlit as st
 import pandas as pd
 import fitz  # PyMuPDF
+import time
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 import re
+
+# --- Fix: Import the missing functions ---
+from ai_analyzer import AIReviewer, check_api_keys
+
+# --- Security: Rate Limiting Constants ---
+CHAT_COOLDOWN_SECONDS = 3
 
 def display_header():
     st.markdown("<h1>🎨 Artwork Verification Co-pilot</h1>", unsafe_allow_html=True)
@@ -24,11 +31,14 @@ def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
         st.header("📝 AI Compliance Check")
         reference_text = st.text_area(
             "Enter text for the AI to verify in uploaded files, one phrase per line.",
-            placeholder="Made in China\n1-year warranty"
+            placeholder="Made in China\n1-year warranty",
+            max_chars=1000  # --- Security: Input Size Restriction ---
         )
         st.header("🤖 AI Custom Summary")
         custom_instructions = st.text_area("Ask the AI a specific question for the final summary.",
-                                           placeholder="Does the manual mention a return policy?")
+                                           placeholder="Does the manual mention a return policy?",
+                                           max_chars=1000 # --- Security: Input Size Restriction ---
+                                          )
         if not api_keys.get('openai'):
             st.warning("An OpenAI API key is required for AI features.")
         if st.button("Clear & Reset"): st.session_state.clear(); st.rerun()
@@ -41,7 +51,6 @@ def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFil
 def display_results_page(global_results: List, per_doc_results: Dict, processed_docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List, **kwargs):
     st.header("📊 Verification Report")
 
-    # Display a message if verification was run without files
     if not processed_docs:
         st.warning("No files were uploaded. The verification report is empty.")
         return
@@ -112,27 +121,36 @@ def display_pdf_previews(files: List[Dict[str, Any]]):
                     st.error(f"Could not render preview for {pdf_file['name']}. Error: {e}")
 
 def display_chat_interface():
-    """Displays the standalone AI chat interface."""
+    """Displays the standalone AI chat interface with rate limiting."""
     st.header("💬 Chat with AI Assistant")
     st.caption("Ask me anything about medical device packaging, labeling, or compliance.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    
+    if "last_chat_time" not in st.session_state:
+        st.session_state.last_chat_time = 0
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
     if prompt := st.chat_input("What is a UDI?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        current_time = time.time()
+        if current_time - st.session_state.last_chat_time < CHAT_COOLDOWN_SECONDS:
+            st.toast(f"Please wait {CHAT_COOLDOWN_SECONDS} seconds between messages.", icon="⏳")
+        else:
+            st.session_state.last_chat_time = current_time
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                api_keys = check_api_keys()
-                reviewer = AIReviewer(api_keys)
-                response = reviewer.run_chatbot_interaction(st.session_state.messages)
-                st.markdown(response)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    api_keys = check_api_keys()
+                    reviewer = AIReviewer(api_keys)
+                    response = reviewer.run_chatbot_interaction(st.session_state.messages)
+                    st.markdown(response)
+            
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.rerun()
