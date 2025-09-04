@@ -1,5 +1,7 @@
 import streamlit as st
 import base64
+import fitz # PyMuPDF
+from io import BytesIO
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 
@@ -94,12 +96,25 @@ def display_ai_review(summary: str):
         st.markdown(summary, unsafe_allow_html=True)
 
 def display_pdf_previews(files: List[Dict[str, Any]]):
-    """Displays uploaded PDFs using an iframe."""
+    """Renders PDF pages as images for reliable in-browser previewing."""
     pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
     if pdf_files:
-        with st.expander("📄 PDF Previews"):
-            for pdf_file in pdf_files:
-                base64_pdf = base64.b64encode(pdf_file['bytes']).decode('utf-8')
-                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>'
-                st.markdown(f"**{pdf_file['name']}**")
-                st.markdown(pdf_display, unsafe_allow_html=True)
+        st.header("📄 PDF Previews")
+        for pdf_file in pdf_files:
+            with st.expander(f"View Preview: {pdf_file['name']}"):
+                try:
+                    # Open the PDF from bytes
+                    doc = fitz.open(stream=pdf_file['bytes'], filetype="pdf")
+                    # Iterate through each page and render it as an image
+                    for page_num in range(len(doc)):
+                        page = doc.load_page(page_num)
+                        pix = page.get_pixmap()
+                        img_bytes = pix.tobytes("png")
+                        st.image(
+                            img_bytes, 
+                            caption=f"Page {page_num + 1} of {len(doc)}",
+                            use_column_width='auto'
+                        )
+                    doc.close()
+                except Exception as e:
+                    st.error(f"Could not render preview for {pdf_file['name']}. Error: {e}")
