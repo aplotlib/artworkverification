@@ -8,24 +8,48 @@ from ui_components import (
     display_instructions,
     display_sidebar,
     display_file_uploader,
-    display_dashboard,
-    display_ai_review,
+    display_results_page,
     display_pdf_previews
 )
 
-def main():
-    """Main function to run the Streamlit application."""
-    st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
-
+def initialize_session_state():
+    """Initializes the session state variables."""
     if "validation_complete" not in st.session_state:
         st.session_state.validation_complete = False
         st.session_state.global_results = []
         st.session_state.per_doc_results = {}
         st.session_state.skus = []
         st.session_state.ai_summary = ""
+        st.session_state.ai_facts = {}
         st.session_state.processed_docs = []
         st.session_state.uploaded_files_data = []
 
+def main():
+    """Main function to run the Streamlit application."""
+    st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
+    initialize_session_state()
+
+    # --- AI Processing (runs on rerun after initial validation) ---
+    if st.session_state.get('run_ai_processing'):
+        st.session_state.run_ai_processing = False  # Prevent re-running
+        api_keys = check_api_keys()
+        reviewer = AIReviewer(api_keys)
+        
+        # 1. AI Fact Extraction on primary packaging
+        packaging_doc_text = next((d['text'] for d in st.session_state.processed_docs if d['doc_type'] == 'packaging_artwork'), None)
+        if packaging_doc_text:
+            st.session_state.ai_facts = reviewer.run_ai_fact_extraction(packaging_doc_text)
+        
+        # 2. Final AI Summary
+        custom_instructions = st.session_state.get('custom_instructions', '')
+        st.session_state.ai_summary = reviewer.generate_summary(
+            docs=st.session_state.processed_docs,
+            custom_instructions=custom_instructions
+        )
+        st.session_state.ai_processing_complete = True
+        st.rerun()
+
+    # --- UI Rendering ---
     display_header()
     display_instructions()
     
@@ -33,40 +57,33 @@ def main():
     run_validation, custom_instructions, reference_text = display_sidebar(api_keys)
     uploaded_files = display_file_uploader()
 
+    # --- Initial Validation Run ---
     if run_validation and uploaded_files:
         st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+        st.session_state.custom_instructions = custom_instructions # Save for the AI run
 
-        with st.spinner("Step 1/3: Analyzing and extracting data from documents..."):
+        with st.spinner("Step 1/2: Analyzing documents and running checks..."):
             processor = DocumentProcessor(st.session_state.uploaded_files_data)
             st.session_state.processed_docs, st.session_state.skus = processor.process_files()
-        
-        with st.spinner("Step 2/3: Running rule-based validation..."):
+            
             all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
             validator = ArtworkValidator(all_text, reference_text=reference_text)
             st.session_state.global_results, st.session_state.per_doc_results = validator.validate(st.session_state.processed_docs)
 
         st.session_state.validation_complete = True
-        
-        if api_keys.get('openai') and api_keys.get('anthropic'):
-            with st.spinner("Step 3/3: Generating AI-powered summary..."):
-                reviewer = AIReviewer(api_keys)
-                st.session_state.ai_summary = reviewer.generate_summary(
-                    docs=st.session_state.processed_docs,
-                    custom_instructions=custom_instructions
-                )
-        else:
-            st.session_state.ai_summary = "AI review skipped. Missing API keys."
-            
+        st.session_state.run_ai_processing = True  # Flag to start AI processing on the next run
         st.rerun()
 
+    # --- Display Results Page ---
     if st.session_state.validation_complete:
-        display_dashboard(
+        display_results_page(
             st.session_state.global_results,
             st.session_state.per_doc_results,
             st.session_state.processed_docs,
-            st.session_state.skus
+            st.session_state.skus,
+            st.session_state.ai_summary,
+            st.session_state.ai_facts
         )
-        display_ai_review(st.session_state.ai_summary)
         display_pdf_previews(st.session_state.uploaded_files_data)
 
 if __name__ == "__main__":
