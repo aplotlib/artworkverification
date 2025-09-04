@@ -13,30 +13,43 @@ class ArtworkValidator:
         """Runs all validation checks and returns global and per-document results."""
         global_results = []
         per_doc_results = defaultdict(list)
-        
-        # --- Global Check: UDI, UPC, and QR Code Analysis ---
-        cleaned_text = self.all_text.replace(" ", "").replace("\n", "")
-        upcs = set(re.findall(r'(\d{12})', cleaned_text))
-        udis = set(re.findall(r'\(01\)(\d{14})', cleaned_text))
-        all_qr_data = "".join(qr for doc in docs for qr in doc['qr_codes'])
 
-        if not upcs and not udis:
-            global_results.append(('failed', "No UPCs or UDIs found across all documents.", "no_serials"))
+        packaging_docs = [d for d in docs if d['doc_type'] == 'packaging_artwork']
+        other_docs = [d for d in docs if d['doc_type'] != 'packaging_artwork']
+
+        # --- Primary Validation on Packaging Artwork ---
+        if not packaging_docs:
+            global_results.append(('failed', "No packaging artwork file was found for primary validation.", "no_packaging"))
         else:
-            # UDI to UPC matching
+            packaging_text = " ".join(d['text'] for d in packaging_docs).replace(" ", "").replace("\n", "")
+            packaging_qrs = "".join(qr for d in packaging_docs for qr in d['qr_codes'])
+            
+            upcs = set(re.findall(r'(\d{12})', packaging_text))
+            udis = set(re.findall(r'\(01\)(\d{14})', packaging_text))
+
+            if not upcs:
+                global_results.append(('failed', "No 12-digit UPCs found on packaging artwork.", "no_upc_on_packaging"))
+            
             for upc in upcs:
                 if not any(upc in udi[2:] for udi in udis):
-                    global_results.append(('failed', f"UPC `{upc}` does not have a matching UDI.", f"mismatch_{upc}"))
+                    global_results.append(('failed', f"Packaging UPC `{upc}` does not have a matching UDI on the packaging.", f"mismatch_{upc}"))
                 else:
-                    global_results.append(('passed', f"UPC `{upc}` has a matching UDI.", f"match_{upc}"))
-            
-            # QR Code to UPC matching
-            if all_qr_data:
-                for upc in upcs:
-                    if upc not in all_qr_data:
-                        global_results.append(('failed', f"UPC `{upc}` was not found in any QR codes.", f"qr_mismatch_{upc}"))
-                    else:
-                        global_results.append(('passed', f"UPC `{upc}` was found in a QR code.", f"qr_match_{upc}"))
+                    global_results.append(('passed', f"Packaging UPC `{upc}` has a matching UDI.", f"match_{upc}"))
+                
+                if packaging_qrs and upc not in packaging_qrs:
+                    global_results.append(('failed', f"Packaging UPC `{upc}` was not found in any packaging QR codes.", f"qr_mismatch_{upc}"))
+                elif packaging_qrs:
+                    global_results.append(('passed', f"Packaging UPC `{upc}` was found in a packaging QR code.", f"qr_match_{upc}"))
+
+            # --- Consistency Check against Other Documents ---
+            other_text = " ".join(d['text'] for d in other_docs).replace(" ", "").replace("\n", "")
+            other_upcs = set(re.findall(r'(\d{12})', other_text))
+            for other_upc in other_upcs:
+                if other_upc not in upcs:
+                    global_results.append(('failed', f"UPC `{other_upc}` from an auxiliary file does not match any packaging UPC.", "consistency_fail"))
+                else:
+                     global_results.append(('passed', f"UPC `{other_upc}` in auxiliary file is consistent with packaging.", "consistency_pass"))
+
 
         # --- Per-Document Check: Reference Text ---
         if self.reference_text:
