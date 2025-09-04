@@ -33,10 +33,10 @@ DOC_TYPE_MAP = {
     'washtag': ['washtag', 'wash tag', 'care'],
     'shipping_mark': ['shipping', 'mark', 'carton'],
     'qc_sheet': ['qc', 'quality', 'sheet', 'specs', '.csv', '.xlsx'],
-    'logo_tag': ['tag'] 
+    'logo_tag': ['tag']
 }
 
-# --- NEW: AI Integration ---
+# --- AI Integration ---
 def check_api_keys():
     keys = {}
     if hasattr(st, 'secrets'):
@@ -132,10 +132,15 @@ class DocumentExtractor:
     @staticmethod
     def _extract_from_qc_sheet(file_buffer, filename):
         try:
-            df = pd.read_csv(file_buffer) if filename.endswith('.csv') else pd.read_excel(file_buffer)
+            df = pd.read_csv(file_buffer, dtype=str).fillna('')
             sku_row = df[df.iloc[:, 2] == 'Wheelchair Bag Advanced']
-            sku = sku_row.iloc[0, 5] if not sku_row.empty else "SKU_NOT_FOUND"
-            color = sku_row.iloc[0, 8] if not sku_row.empty else "COLOR_NOT_FOUND"
+            if sku_row.empty:
+                return {'success': False, 'error': "Could not find 'Wheelchair Bag Advanced' in Column C of the QC sheet."}
+            
+            # Convert to string to prevent errors
+            sku = str(sku_row.iloc[0, 5])
+            color = str(sku_row.iloc[0, 8])
+            
             return {'success': True, 'text': df.to_string(), 'sku': sku, 'color': color}
         except Exception as e:
             return {'success': False, 'error': f"Could not parse QC Sheet: {e}"}
@@ -162,6 +167,7 @@ class ProductDataBuilder:
         return 'unknown'
 
     def build(self):
+        # First pass for QC sheets
         for file in self.files:
             if self._get_doc_type(file['name']) == 'qc_sheet':
                 extraction = DocumentExtractor.extract(file['buffer'], file['type'], file['name'])
@@ -169,6 +175,7 @@ class ProductDataBuilder:
                     sku = extraction['sku']
                     self.product_data['variants'][sku] = {"sku": sku, "color": extraction['color'], "files": {}}
         
+        # Second pass for other files
         for file in self.files:
             doc_type = self._get_doc_type(file['name'])
             if doc_type == 'qc_sheet': continue
@@ -181,7 +188,8 @@ class ProductDataBuilder:
                 continue
             associated = False
             for sku, variant_data in self.product_data['variants'].items():
-                if sku.lower() in file['name'].lower() or variant_data['color'].lower() in file['name'].lower():
+                # Ensure all comparisons are string-to-string
+                if str(sku).lower() in file['name'].lower() or str(variant_data['color']).lower() in file['name'].lower():
                     variant_data['files'][doc_type] = file_data
                     associated = True
                     break
@@ -293,7 +301,6 @@ def main():
 
     with st.sidebar:
         st.header("🚀 Actions")
-        use_demo = st.button("Load Demo Data")
         run_validation = st.button("🔍 Run Validation", type="primary")
         
         st.markdown("---")
@@ -310,22 +317,16 @@ def main():
                 selected_provider = st.selectbox("Choose AI Provider", options=list(provider_options.keys()))
                 ai_provider = provider_options[selected_provider]
             else:
-                st.error("No API keys found in secrets.toml. Please add `openai_api_key` or `anthropic_api_key`.")
+                st.error("No API keys found in secrets. Please add `openai_api_key` or `anthropic_api_key` to your secrets.toml file.")
 
         if st.button("Clear & Reset"):
             st.session_state.clear()
             st.rerun()
 
-    files_to_process = []
-    # Logic to load demo or uploaded files
-    if use_demo:
-        demo_files = load_demo_files()
-        if demo_files: files_to_process = demo_files
-    else:
-        uploaded_files = st.file_uploader("Upload all artwork & QC files", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
-        if uploaded_files: files_to_process = [{"buffer": file, "name": file.name, "type": file.type} for file in uploaded_files]
-
-    if run_validation and files_to_process:
+    uploaded_files = st.file_uploader("Upload all artwork & QC files for your product", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
+    
+    if run_validation and uploaded_files:
+        files_to_process = [{"buffer": file, "name": file.name, "type": file.type} for file in uploaded_files]
         with st.spinner("Building product data structure..."):
             builder = ProductDataBuilder(files_to_process)
             product_data = builder.build()
@@ -334,7 +335,7 @@ def main():
             validator = ArtworkValidator(product_data)
             st.session_state.results = validator.validate_all()
             st.session_state.validation_complete = True
-            st.session_state.ai_reviews = [] # Clear previous AI reviews
+            st.session_state.ai_reviews = []
 
         if enable_ai_review and ai_provider:
             with st.spinner(f"Sending data to {ai_provider} for optional review..."):
@@ -362,35 +363,6 @@ def main():
             if p_data.get('unassociated'):
                  preview_data["Unassociated Files"] = [f.get('filename') for f in p_data.get('unassociated', [])]
             st.json(preview_data)
-
-def load_demo_files():
-    """Loads the provided demo files into memory."""
-    # This function should be defined as before, with the correct file paths
-    # For brevity, it is omitted here, but should be included in your final script.
-    # Make sure the file paths are correct.
-    demo_files = {}
-    file_paths = [
-        "wheelchair_bag_washtag.pdf",
-        "wheelchair_bag_tag_purple_250625.pdf",
-        "Wheelchair Bag Advanced 020625.xlsx - Purple Floral.csv",
-        "Wheelchair Bag Advanced 020625.xlsx - Black.csv",
-        "Copy of wheelchair_bag_advanced_purple_floral_240625.pdf",
-        "Copy of wheelchair_bag_advanced_quickstart_020625.pdf",
-        "Copy of Wheelchair_Bag_Black_Shipping_Mark.pdf",
-        "Copy of wheelchair_bag_purple_flower_shipping_mark.pdf",
-        "Copy of wheelchair_bag_tag_black_250625.pdf"
-    ]
-    for filename in file_paths:
-        try:
-            with open(filename, "rb") as f:
-                file_bytes = f.read()
-                mime_type = "application/pdf" if filename.endswith((".pdf", ".pdf")) else "text/csv"
-                demo_files[filename] = {"buffer": BytesIO(file_bytes), "name": filename, "type": mime_type}
-        except FileNotFoundError:
-            st.error(f"Demo file not found: {filename}. Please ensure it's in the same directory.")
-            return None
-    return list(demo_files.values())
-
 
 if __name__ == "__main__":
     main()
