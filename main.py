@@ -1,14 +1,3 @@
-"""
-Vive Health Artwork Verification System
-A comprehensive Streamlit app for validating packaging artwork against company standards.
-
-This robust version includes:
-- Detailed, interactive validation results
-- QR code and artwork dimension analysis
-- Report generation and exporting
-- A pre-loaded demo mode for showcasing functionality
-"""
-
 import streamlit as st
 import re
 import pandas as pd
@@ -225,22 +214,63 @@ class ArtworkValidator:
         return results
 
     def cross_validate_serials(self, documents):
+        """
+        New and improved serial number validation logic.
+        - Extracts all 12-digit UPCs and UDIs from all documents.
+        - For each UPC, it checks for a partial match within the found UDIs.
+        - It also validates that the UPC is present in the QR code data of the packaging artwork.
+        """
         results = []
-        all_serials = re.findall(r'\b(\d{12,14})\b', " ".join([d.get('text', '') for d in documents.values()]))
-        if not all_serials:
-            results.append(('failed', 'No 12-14 digit UPC/UDI serial numbers found in any document.', 'no_serials_found', 'general'))
+        all_text = " ".join([d.get('text', '') for d in documents.values()])
+        all_qr_data = []
+        for doc in documents.values():
+            if doc.get('doc_type') == 'packaging_artwork':
+                all_qr_data.extend(doc.get('qr_data', []))
+
+        # Regex to find 12-digit UPCs and UDIs in the format (01)xxxxxxxxxxxxxx
+        upcs = set(re.findall(r'\b(\d{12})\b', all_text))
+        udis = set(re.findall(r'\(01\)(\d{14})', all_text))
+
+        if not upcs:
+            results.append(('failed', 'No 12-digit UPC serial numbers found in any document.', 'no_upcs_found', 'general'))
             return results
 
-        primary_upc = Counter(all_serials).most_common(1)[0][0]
-        results.append(('info', f'Primary UPC identified for cross-validation: {primary_upc}', 'primary_upc_info', 'general'))
+        for upc in upcs:
+            # Check 1: UPC and UDI on box should have a partial EXACT match of 12 digit serials.
+            udis_with_upc = [udi for udi in udis if upc in udi]
+            if not udis_with_upc:
+                results.append(('failed', f'UPC {upc} not found in any UDI.', 'upc_udi_mismatch', 'general'))
+            else:
+                results.append(('passed', f'UPC {upc} has a matching UDI.', 'upc_udi_match', 'general'))
 
-        pkg_art = documents.get('packaging_artwork', {})
-        pkg_qr = pkg_art.get('qr_data', [])
-        if not any(primary_upc in data for data in pkg_qr):
-            results.append(('failed', f'Primary UPC {primary_upc} NOT found in packaging QR code data.', 'upc_missing_in_qr', 'general'))
-        else:
-            results.append(('passed', f'Primary UPC {primary_upc} was found in the packaging QR code.', 'upc_found_in_qr', 'general'))
+            # Check 2: The Product QR code should have the 12digit UPC serial as well.
+            if not any(upc in qr for qr in all_qr_data):
+                results.append(('failed', f'UPC {upc} not found in any packaging QR code.', 'upc_missing_in_qr', 'general'))
+            else:
+                results.append(('passed', f'UPC {upc} found in packaging QR code.', 'upc_in_qr_ok', 'general'))
+
         return results
+
+    def generate_serials_summary(self, documents):
+        """
+        Generates a DataFrame summarizing the found UPCs and UDIs.
+        This is the foundation for the summary table you requested.
+        We can expand this to include SKU and Size information later.
+        """
+        all_text = " ".join([d.get('text', '') for d in documents.values()])
+        upcs = set(re.findall(r'\b(\d{12})\b', all_text))
+        udis = set(re.findall(r'\(01\)(\d{14})', all_text))
+        
+        rows = []
+        for upc in upcs:
+            matching_udi = next((udi for udi in udis if upc in udi), "Not Found")
+            rows.append({
+                "UPC Digits": upc,
+                "UDI Code": matching_udi
+            })
+        
+        return pd.DataFrame(rows)
+
 
     def validate_all(self, documents, product_info):
         all_results = []
@@ -365,6 +395,7 @@ def main():
             with st.spinner("Validating artwork..."):
                 validator = ArtworkValidator()
                 st.session_state.validation_results = validator.validate_all(st.session_state.documents, product_info)
+                st.session_state.serials_summary = validator.generate_serials_summary(st.session_state.documents)
                 st.session_state.validation_complete = True
         
         if st.session_state.validation_complete:
@@ -373,9 +404,10 @@ def main():
                 dims_data = [{'Filename': doc['filename'], 'Dimensions': doc.get('dimensions', 'N/A')} for doc in st.session_state.documents.values()]
                 st.dataframe(pd.DataFrame(dims_data), use_container_width=True)
             
-            with st.expander("Detected Serial Numbers & QR Codes", expanded=True):
-                serials_data = [{'Filename': doc['filename'], 'Detected UPC/UDI': ', '.join(re.findall(r'\b\d{12,14}\b', doc.get('text', ''))), 'Decoded QR Data': ', '.join(doc.get('qr_data', []))} for doc in st.session_state.documents.values()]
-                st.dataframe(pd.DataFrame(serials_data), use_container_width=True)
+            # New Serials Summary Report
+            if 'serials_summary' in st.session_state and not st.session_state.serials_summary.empty:
+                with st.expander("Serials Summary", expanded=True):
+                    st.dataframe(st.session_state.serials_summary, use_container_width=True)
 
             st.header("📋 Detailed Validation Results & Review")
             for result in sorted(st.session_state.validation_results, key=lambda x: {'failed': 0, 'warning': 1, 'info': 2, 'passed': 3}[x[0]]):
