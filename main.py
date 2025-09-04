@@ -46,46 +46,64 @@ def check_api_keys():
     return keys
 
 class AIReviewer:
-    def __init__(self, provider, api_keys):
-        self.provider = provider
+    def __init__(self, api_keys):
         self.api_keys = api_keys
+        self.openai_client = openai.OpenAI(api_key=self.api_keys.get('openai')) if 'openai' in self.api_keys else None
+        self.anthropic_client = anthropic.Anthropic(api_key=self.api_keys.get('anthropic')) if 'anthropic' in self.api_keys else None
 
-    def generate_summary(self, variant_sku, text_bundle, custom_instructions):
+    def _get_openai_summary(self, prompt):
+        if not self.openai_client: return "OpenAI API key not found."
+        try:
+            response = self.openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.1)
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"OpenAI API Error: {e}"
+
+    def _get_anthropic_summary(self, prompt):
+        if not self.anthropic_client: return "Anthropic API key not found."
+        try:
+            response = self.anthropic_client.messages.create(model="claude-3-haiku-20240307", max_tokens=1024, messages=[{"role": "user", "content": prompt}], temperature=0.1)
+            return response.content[0].text
+        except Exception as e:
+            return f"Anthropic API Error: {e}"
+
+    def generate_summary(self, provider, variant_sku, text_bundle, custom_instructions):
         instruction_prompt = ""
         if custom_instructions:
-            instruction_prompt = f"""
-            In addition to your standard checks, the user has provided the following special instructions: '{custom_instructions}'. Please ensure your review addresses these points specifically.
-            """
+            instruction_prompt = f"In addition, the user has provided the following special instructions: '{custom_instructions}'. Please incorporate these into your review."
 
         prompt = f"""
         You are a meticulous quality assurance specialist for Vive Health. Review the extracted text from artwork files for product variant {variant_sku} and provide a concise summary.
-
-        Here is the combined text from all relevant documents:
+        Key Information to check: Product Name, SKU, UPC, and UDI. Check for consistency and flag any issues like missing "Made in China" text.
+        {instruction_prompt}
+        Present findings as a brief, bulleted list. Start with "### AI Review Summary for {variant_sku}".
+        Here is the combined text:
         ---
         {text_bundle}
         ---
-
-        Your task:
-        1.  **Identify Key Information**: Find the Product Name, SKU, UPC, and UDI.
-        2.  **Check for Consistency**: State if this information is consistent across documents.
-        3.  **Flag Potential Issues**: Mention any other issues like missing "Made in China" text or conflicting details.
-        4.  **Follow Custom Instructions**: {instruction_prompt}
-
-        Present your findings as a brief, bulleted list. Start with "### AI Review Summary for {variant_sku}".
         """
-        try:
-            if self.provider == 'openai' and 'openai' in self.api_keys:
-                client = openai.OpenAI(api_key=self.api_keys['openai'])
-                response = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.1)
-                return response.choices[0].message.content
-            elif self.provider == 'anthropic' and 'anthropic' in self.api_keys:
-                client = anthropic.Anthropic(api_key=self.api_keys['anthropic'])
-                response = client.messages.create(model="claude-3-haiku-20240307", max_tokens=1024, messages=[{"role": "user", "content": prompt}], temperature=0.1)
-                return response.content[0].text
-            else:
-                return f"Error: API key for {self.provider} not found."
-        except Exception as e:
-            return f"An error occurred during AI review: {str(e)}"
+
+        if provider == 'openai':
+            return self._get_openai_summary(prompt)
+        elif provider == 'anthropic':
+            return self._get_anthropic_summary(prompt)
+        elif provider == 'both':
+            openai_summary = self._get_openai_summary(prompt)
+            anthropic_summary = self._get_anthropic_summary(prompt)
+            return f"""
+            <div style="display: flex; gap: 20px;">
+                <div style="flex: 1; border: 1px solid #ddd; border-radius: 5px; padding: 10px;">
+                    <h4>OpenAI (GPT-4o Mini) Review</h4>
+                    {openai_summary}
+                </div>
+                <div style="flex: 1; border: 1px solid #ddd; border-radius: 5px; padding: 10px;">
+                    <h4>Anthropic (Claude Haiku) Review</h4>
+                    {anthropic_summary}
+                </div>
+            </div>
+            """
+        else:
+            return "Error: Invalid AI provider selected."
 
 # --- File Processing and Extraction ---
 @contextmanager
@@ -99,6 +117,7 @@ def managed_pdf_document(file_buffer):
         if pdf_doc: pdf_doc.close()
 
 class DocumentExtractor:
+    # ... (DocumentExtractor class remains the same)
     @staticmethod
     def _decode_qr_codes(image: Image.Image) -> List[str]:
         try: return [obj.data.decode('utf-8') for obj in qr_decode(image)]
@@ -140,8 +159,10 @@ class DocumentExtractor:
             return DocumentExtractor._extract_from_pdf(file_buffer)
         return {'success': False, 'error': 'Unsupported file type'}
 
+
 # --- Product Data Structure Builder ---
 class ProductDataBuilder:
+    # ... (ProductDataBuilder class remains the same)
     def __init__(self, files):
         self.files = files
         self.product_data = {"variants": {}, "shared_files": {}, "unassociated": []}
@@ -159,7 +180,6 @@ class ProductDataBuilder:
             if extraction.get('success') and extraction.get('sku'):
                 sku = extraction['sku']
                 self.product_data['variants'][sku] = {"sku": sku, "color": extraction.get('color'), "files": {'qc_sheet': {'filename': file['name'], **extraction}}}
-
         other_files = [f for f in self.files if self._get_doc_type(f['name']) != 'qc_sheet']
         for file in other_files:
             doc_type = self._get_doc_type(file['name'])
@@ -179,8 +199,10 @@ class ProductDataBuilder:
                 self.product_data["unassociated"].append(file_data)
         return self.product_data
 
+
 # --- Artwork Validator ---
 class ArtworkValidator:
+    # ... (ArtworkValidator class remains the same)
     def __init__(self, product_data, reference_text=None):
         self.product_data = product_data
         self.reference_text = reference_text
@@ -196,9 +218,8 @@ class ArtworkValidator:
         elif self.reference_text:
             return [('passed', f"Mandatory text from reference file was found for {context}.", f"ref_text_ok_{context}")]
         return []
-
+        
     def _validate_serials_for_variant(self, variant):
-        # ... (serial validation remains the same)
         results = []
         all_files = list(variant['files'].values()) + list(self.product_data['shared_files'].values())
         all_text = " ".join([d.get('text', '') for d in all_files])
@@ -222,23 +243,17 @@ class ArtworkValidator:
 
     def validate_all(self):
         all_results = []
-        # Validate categorized variants
         for sku, variant in self.product_data['variants'].items():
             variant_results = []
             if 'packaging_artwork' not in variant['files']:
                  variant_results.append(('failed', f"Missing packaging artwork for {sku}", f"missing_pkg_{sku}"))
-            
             variant_files = list(variant.get('files', {}).values())
             shared_files = list(self.product_data.get('shared_files', {}).values())
             all_text_bundle = " ".join(d.get('text', '') for d in variant_files + shared_files)
-            
             variant_results.extend(self._validate_serials_for_variant(variant))
             variant_results.extend(self._validate_reference_text(all_text_bundle, sku))
-            
             for res in variant_results:
                 all_results.append((res[0], res[1], res[2], sku))
-
-        # Flag unassociated files and run checks on them
         for file_data in self.product_data['unassociated']:
             filename = file_data['filename']
             unassociated_results = [('failed', f"File '{filename}' could not be associated with any product variant and requires manual review.", f"unassociated_{filename}")]
@@ -247,33 +262,32 @@ class ArtworkValidator:
             unassociated_results.extend(self._validate_reference_text(text, filename))
             for res in unassociated_results:
                 all_results.append((res[0], res[1], res[2], 'Unassociated Files'))
-
         return all_results
+
 
 # --- UI Components ---
 def display_header():
+    # ... (remains the same)
     st.markdown("""
-    <style> .main-header { ... } .success-box, .error-box, .warning-box { ... } </style>
+    <style> .main-header { padding: 1.5rem; background-color: #0891b2; border-radius: 10px; text-align: center; margin-bottom: 2rem; color: white; } .success-box, .error-box, .warning-box { padding: 1rem; margin: 0.5rem 0; border-radius: 5px; } .success-box { background-color: #d1fae5; border-left: 5px solid #10b981; } .error-box { background-color: #fee2e2; border-left: 5px solid #ef4444; } .warning-box { background-color: #fef3c7; border-left: 5px solid #f59e0b; } </style>
     <div class="main-header">
         <h1>✅ Vive Health Artwork Verification System</h1>
         <p>Rule-Based Validation with Optional AI-Powered Review</p>
     </div>
     """, unsafe_allow_html=True)
 
+
 def display_results(results):
+    # ... (remains the same)
     results_by_context = {}
     for status, msg, res_id, context in results:
         if context not in results_by_context: results_by_context[context] = []
         results_by_context[context].append((status, msg))
-    
-    # Display unassociated files first for high visibility
     if 'Unassociated Files' in results_by_context:
         with st.expander("### ⚠️ Unassociated Files Requiring Manual Review", expanded=True):
-            st.error("The following files could not be automatically matched to a product variant defined in the QC sheets. They must be manually reviewed.")
+            st.error("The following files could not be automatically matched to a product variant. They must be manually reviewed.")
             for status, msg in results_by_context['Unassociated Files']:
-                icon = '❌'
-                st.markdown(f'<div class="error-box">{icon} {msg}</div>', unsafe_allow_html=True)
-
+                st.markdown(f'<div class="error-box">❌ {msg}</div>', unsafe_allow_html=True)
     for context, context_results in results_by_context.items():
         if context == 'Unassociated Files': continue
         with st.expander(f"### Rule-Based Validation Results for: {context}", expanded=True):
@@ -282,6 +296,7 @@ def display_results(results):
                 icon = {'passed': '✅', 'failed': '❌', 'warning': '⚠️'}.get(status)
                 box_class = {'passed': 'success-box', 'failed': 'error-box', 'warning': 'warning-box'}.get(status)
                 st.markdown(f'<div class="{box_class}">{icon} {msg}</div>', unsafe_allow_html=True)
+
 
 def display_ai_review(ai_reviews):
     # ... (remains the same)
@@ -294,6 +309,7 @@ def display_ai_review(ai_reviews):
     """)
     for summary in ai_reviews:
         st.markdown(summary, unsafe_allow_html=True)
+
 
 # --- Main App Logic ---
 def main():
@@ -308,8 +324,8 @@ def main():
         
         st.markdown("---")
         st.header("📝 Custom Validation Rules (Optional)")
-        ref_file = st.file_uploader("Reference Text File (.txt)", type=['txt'], help="Upload a text file with phrases that MUST appear in the artwork.")
-        custom_instructions = st.text_area("Custom Instructions for AI", help="e.g., 'Check for a 1-year warranty statement.'")
+        ref_file = st.file_uploader("Reference Text File (.txt)", type=['txt'])
+        custom_instructions = st.text_area("Custom Instructions for AI")
 
         st.markdown("---")
         st.header("🤖 AI-Powered Review (Optional)")
@@ -320,6 +336,9 @@ def main():
             provider_options = {"Select AI...": None}
             if 'openai' in api_keys: provider_options["OpenAI (GPT-4o Mini)"] = 'openai'
             if 'anthropic' in api_keys: provider_options["Anthropic (Claude Haiku)"] = 'anthropic'
+            if 'openai' in api_keys and 'anthropic' in api_keys:
+                provider_options["Both (Compare Results)"] = 'both'
+
             if len(provider_options) > 1:
                 selected_provider = st.selectbox("Choose AI Provider", options=list(provider_options.keys()))
                 ai_provider = provider_options[selected_provider]
@@ -330,14 +349,23 @@ def main():
             st.session_state.clear()
             st.rerun()
 
+    st.markdown("### Double-Check These Areas")
+    st.info("Based on past issues, please manually double-check the following points in your artwork files:")
+    cols = st.columns(2)
+    with cols[0]:
+        st.checkbox("Is the **Country of Origin** correct on all labels?", key="check1")
+        st.checkbox("Does the **Logo Color** match the QC sheet?", key="check2")
+    with cols[1]:
+        st.checkbox("Are all **QR codes** present and correct?", key="check3")
+        st.checkbox("Do **dimensions** on tags match the QC sheet?", key="check4")
+    
+    st.markdown("---")
+    
     uploaded_files = st.file_uploader("Upload all artwork & QC files", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if run_validation and uploaded_files:
         files_to_process = [{"buffer": file, "name": file.name, "type": file.type} for file in uploaded_files]
-        
-        reference_text = None
-        if ref_file:
-            reference_text = ref_file.read().decode("utf-8").strip()
+        reference_text = ref_file.read().decode("utf-8").strip() if ref_file else None
 
         with st.spinner("Processing files and building product structure..."):
             builder = ProductDataBuilder(files_to_process)
@@ -350,12 +378,12 @@ def main():
             st.session_state.ai_reviews = []
 
         if enable_ai_review and ai_provider:
-            with st.spinner(f"Sending data to {ai_provider} for optional review..."):
-                reviewer = AIReviewer(ai_provider, api_keys)
+            with st.spinner(f"Sending data to AI for optional review..."):
+                reviewer = AIReviewer(api_keys)
                 for sku, variant in product_data.get('variants', {}).items():
                     all_files = list(variant.get('files', {}).values()) + list(product_data.get('shared_files', {}).values())
                     text_bundle = "\n\n---\n\n".join([f"Source: {d.get('filename', 'N/A')}\n{d.get('text', '')}" for d in all_files])
-                    summary = reviewer.generate_summary(sku, text_bundle, custom_instructions)
+                    summary = reviewer.generate_summary(ai_provider, sku, text_bundle, custom_instructions)
                     st.session_state.ai_reviews.append(summary)
 
     if st.session_state.validation_complete:
