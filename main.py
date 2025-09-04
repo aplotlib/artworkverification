@@ -23,7 +23,8 @@ def main():
     # Initialize session state
     if "validation_complete" not in st.session_state:
         st.session_state.validation_complete = False
-        st.session_state.results = []
+        st.session_state.global_results = []
+        st.session_state.per_doc_results = {}
         st.session_state.skus = []
         st.session_state.ai_summary = ""
         st.session_state.processed_docs = []
@@ -31,7 +32,7 @@ def main():
 
     display_header()
     api_keys = check_api_keys()
-    run_validation, custom_instructions = display_sidebar(api_keys)
+    run_validation, custom_instructions, reference_text = display_sidebar(api_keys)
     uploaded_files = display_file_uploader()
 
     if run_validation and uploaded_files:
@@ -47,12 +48,13 @@ def main():
         
         with st.spinner("Step 2/3: Running rule-based validation..."):
             all_text = "\n\n".join(doc['text'] for doc in processed_docs)
-            validator = ArtworkValidator(all_text)
-            st.session_state.results = validator.validate()
+            validator = ArtworkValidator(all_text, reference_text=reference_text)
+            global_results, per_doc_results = validator.validate(st.session_state.processed_docs)
+            st.session_state.global_results = global_results
+            st.session_state.per_doc_results = per_doc_results
 
         st.session_state.validation_complete = True
         
-        # Run AI review if keys are available
         if api_keys.get('openai') and api_keys.get('anthropic'):
             with st.spinner("Step 3/3: Generating AI-powered summary..."):
                 reviewer = AIReviewer(api_keys)
@@ -65,9 +67,13 @@ def main():
             
         st.rerun()
 
-    # --- Display Results ---
     if st.session_state.validation_complete:
-        display_dashboard(st.session_state.results, st.session_state.processed_docs, st.session_state.skus)
+        display_dashboard(
+            st.session_state.global_results,
+            st.session_state.per_doc_results,
+            st.session_state.processed_docs,
+            st.session_state.skus
+        )
         display_ai_review(st.session_state.ai_summary)
         display_pdf_previews(st.session_state.uploaded_files_data)
 
