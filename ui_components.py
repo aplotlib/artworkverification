@@ -5,8 +5,6 @@ import time
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 import re
-
-# --- Fix: Import the missing functions ---
 from ai_analyzer import AIReviewer, check_api_keys
 
 # --- Security: Rate Limiting Constants ---
@@ -137,6 +135,7 @@ def display_chat_interface():
 
     if prompt := st.chat_input("What is a UDI?"):
         current_time = time.time()
+        # --- Security: Chat Rate Limiting ---
         if current_time - st.session_state.last_chat_time < CHAT_COOLDOWN_SECONDS:
             st.toast(f"Please wait {CHAT_COOLDOWN_SECONDS} seconds between messages.", icon="⏳")
         else:
