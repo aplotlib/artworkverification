@@ -14,11 +14,7 @@ from ui_components import (
 
 def main():
     """Main function to run the Streamlit application."""
-    st.set_page_config(
-        page_title=AppConfig.APP_TITLE,
-        page_icon=AppConfig.PAGE_ICON,
-        layout="wide"
-    )
+    st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
 
     # Initialize session state
     if "validation_complete" not in st.session_state:
@@ -36,22 +32,16 @@ def main():
     uploaded_files = display_file_uploader()
 
     if run_validation and uploaded_files:
-        st.session_state.uploaded_files_data = [
-            {"name": f.name, "bytes": f.getvalue()} for f in uploaded_files
-        ]
+        st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
 
-        with st.spinner("Step 1/3: Analyzing and extracting text from documents..."):
+        with st.spinner("Step 1/3: Analyzing and extracting data from documents..."):
             processor = DocumentProcessor(st.session_state.uploaded_files_data)
-            processed_docs, skus = processor.process_files()
-            st.session_state.processed_docs = processed_docs
-            st.session_state.skus = skus
+            st.session_state.processed_docs, st.session_state.skus = processor.process_files()
         
         with st.spinner("Step 2/3: Running rule-based validation..."):
-            all_text = "\n\n".join(doc['text'] for doc in processed_docs)
+            all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
             validator = ArtworkValidator(all_text, reference_text=reference_text)
-            global_results, per_doc_results = validator.validate(st.session_state.processed_docs)
-            st.session_state.global_results = global_results
-            st.session_state.per_doc_results = per_doc_results
+            st.session_state.global_results, st.session_state.per_doc_results = validator.validate(st.session_state.processed_docs)
 
         st.session_state.validation_complete = True
         
@@ -63,7 +53,7 @@ def main():
                     custom_instructions=custom_instructions
                 )
         else:
-            st.session_state.ai_summary = "AI review skipped. Missing OpenAI or Anthropic API keys."
+            st.session_state.ai_summary = "AI review skipped. Missing API keys."
             
         st.rerun()
 
