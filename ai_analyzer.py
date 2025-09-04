@@ -18,7 +18,7 @@ def check_api_keys() -> Dict[str, str]:
     return keys
 
 class AIReviewer:
-    """Handles a multi-agent AI workflow for sophisticated artwork analysis."""
+    """Handles a multi-agent AI workflow for sophisticated artwork analysis and chat."""
 
     def __init__(self, api_keys: Dict[str, str]):
         self.api_keys = api_keys
@@ -49,15 +49,17 @@ class AIReviewer:
                 model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
                 temperature=0, response_format={"type": "json_object"}
             )
-            # The model might return the list under a key, so we handle that.
             response_data = json.loads(response.choices[0].message.content)
+            
+            # --- AI Reliability Enhancement ---
+            # Handle cases where the model wraps the list in a dictionary
             if isinstance(response_data, dict):
-                # Look for the list within the dictionary
                 for key, value in response_data.items():
                     if isinstance(value, list):
                         return value
             elif isinstance(response_data, list):
                 return response_data
+            
             return [] # Return empty if format is unexpected
         except Exception as e:
             return [{"phrase": "AI Compliance Check", "status": "Fail", "reasoning": str(e)}]
@@ -66,7 +68,6 @@ class AIReviewer:
         """Generates a final summary synthesizing all previous analysis stages."""
         if not self.openai_client: return "OpenAI API key not found."
         
-        # Create a condensed text bundle for the final summary
         text_bundle = "\n\n".join([f"--- File: {d['filename']} ({d['file_nature']}) ---\n{d['text'][:1000]}..." for d in docs])
         
         prompt = f"""You are a Senior QA Manager providing a final artwork verification report.
@@ -89,3 +90,22 @@ class AIReviewer:
             return response.choices[0].message.content
         except Exception as e:
             return f"OpenAI API Error during final summary: {e}"
+
+    def run_chatbot_interaction(self, history: List[Dict[str, str]]) -> str:
+        """Engages the AI in a conversation about medical device packaging."""
+        if not self.openai_client: return "OpenAI API key not found."
+        
+        system_prompt = {
+            "role": "system",
+            "content": "You are a helpful assistant specializing in medical device packaging, labeling, and regulatory compliance. Answer questions clearly and concisely. You can talk about FDA regulations, UDI requirements, ISO standards, materials, and design best practices."
+        }
+        
+        messages = [system_prompt] + history
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini", messages=messages, temperature=0.3
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"An error occurred with the AI: {e}"
