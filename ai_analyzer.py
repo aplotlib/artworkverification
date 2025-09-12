@@ -24,10 +24,24 @@ class AIReviewer:
         self.api_keys = api_keys
         self.openai_client = openai.OpenAI(api_key=api_keys.get('openai')) if 'openai' in api_keys else None
 
+    def run_ai_ocr_correction(self, text: str) -> str:
+        """Uses AI to correct OCR errors in raw extracted text."""
+        if not self.openai_client: return text
+        prompt = f"""You are an OCR correction expert. Review the following text extracted from a document and fix any scanning or recognition errors. Preserve the original formatting and content as much as possible. Only return the corrected text, without any additional commentary.
+        RAW OCR TEXT: --- {text} ---"""
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            return response.choices[0].message.content
+        except Exception:
+            return text # Return original text if correction fails
+
     def run_ai_fact_extraction(self, text: str) -> Dict[str, Any]:
-        """Uses an AI to correct OCR errors and extract key facts into a structured JSON."""
+        """Uses an AI to extract key facts into a structured JSON."""
         if not self.openai_client: return {"error": "OpenAI API key not found."}
-        prompt = f"""You are an expert data extraction agent. From the following raw text, correct any OCR errors and extract the key information into a JSON object. Extract: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', 'Dimensions', and 'MaterialComposition'. If a field is not present, use null. TEXT TO ANALYZE: --- {text} --- Respond with ONLY the JSON object."""
+        prompt = f"""You are an expert data extraction agent. From the following text, extract the key information into a JSON object. Extract: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', 'Dimensions', and 'MaterialComposition'. If a field is not present, use null. TEXT TO ANALYZE: --- {text} --- Respond with ONLY the JSON object."""
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
@@ -116,7 +130,6 @@ class AIReviewer:
 
         system_prompt = {"role": "system", "content": system_message}
         
-        # --- Security: Chat History Capping ---
         capped_history = history[-10:]
         messages = [system_prompt] + capped_history
         
