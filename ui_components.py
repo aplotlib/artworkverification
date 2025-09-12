@@ -1,31 +1,40 @@
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF
 import time
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
-import re
-import json
+import numpy as np
 from ai_analyzer import AIReviewer, check_api_keys
 
 # --- Security: Rate Limiting Constants ---
 CHAT_COOLDOWN_SECONDS = 3
 
 def display_header():
-    st.markdown("<h1>🎨 Artwork Verification Co-pilot</h1>", unsafe_allow_html=True)
+    st.markdown("""
+        <style>
+            .header-title {
+                font-size: 3rem;
+                font-weight: 700;
+                color: #2A9D8F;
+                padding: 1rem 0;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<h1 class="header-title">🎨 Artwork Verification Co-pilot</h1>', unsafe_allow_html=True)
 
 def display_instructions():
     with st.expander("📖 How to Use This Tool"):
         st.markdown("""
-        **1. Upload Files**: Drag and drop all related artwork files for a single product to run a verification report.
+        **1. Upload Files or Folders**: Drag and drop all related artwork files or a folder for a single product to run a verification report.
         **2. Review Report**: Key metrics appear at the top. Use the tabs below for detailed findings.
         **3. Chat with AI**: Use the chat interface at the bottom to ask about the report or general compliance questions.
         """)
 
-def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
+def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str, bool]:
     with st.sidebar:
         st.header("⚙️ Controls")
         run_validation = st.button("🔍 Run Verification", type="primary")
+        run_test_validation = st.button("🧪 Run Test Validation")
         st.header("📝 AI Compliance Check")
         reference_text = st.text_area(
             "Enter text for the AI to verify in uploaded files, one phrase per line.",
@@ -40,10 +49,10 @@ def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
         if not api_keys.get('openai'):
             st.warning("An OpenAI API key is required for AI features.")
         if st.button("Clear & Reset"): st.session_state.clear(); st.rerun()
-    return run_validation, custom_instructions, reference_text
+    return run_validation, custom_instructions, reference_text, run_test_validation
 
 def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFile]:
-    return st.file_uploader("Upload all artwork files for one product (PDF, CSV, XLSX)",
+    return st.file_uploader("Upload all artwork files for one product (PDF, CSV, XLSX) or a folder",
                              type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
 
 def display_results_page(global_results: List, per_doc_results: Dict, processed_docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List, quality_results: Dict, **kwargs):
@@ -60,9 +69,13 @@ def display_results_page(global_results: List, per_doc_results: Dict, processed_
                        sum(1 for res in compliance_results if res.get('status') == 'Fail')
         quality_issues = len(quality_results.get('issues', []))
         total_issues = total_failures + quality_issues
+        
+        sparkline_data = np.random.randn(20)
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Issues", total_issues, "High" if total_issues > 0 else "None", delta_color="inverse")
+        with col1:
+            st.metric("Total Issues", total_issues, "High" if total_issues > 0 else "None", delta_color="inverse")
+            st.line_chart(sparkline_data, height=100)
         col2.metric("Rule-Based Failures", total_failures)
         col3.metric("Quality/Typo Issues", quality_issues)
         col4.metric("SKUs Found", len(skus), ", ".join(skus))
@@ -123,7 +136,7 @@ def display_results_page(global_results: List, per_doc_results: Dict, processed_
                         st.text_area("Extracted Text Preview", text_preview, height=250, key=f"text_{doc['filename']}", label_visibility="collapsed")
 
 def display_pdf_previews(files: List[Dict[str, Any]]):
-    """Renders PDF pages as images for reliable in-browser previewing."""
+    """Renders PDFs using the new st.pdf function."""
     if not files: return
     st.header("📄 PDF Previews")
     pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
@@ -131,12 +144,7 @@ def display_pdf_previews(files: List[Dict[str, Any]]):
         for pdf_file in pdf_files:
             with st.expander(f"View Preview: {pdf_file['name']}"):
                 try:
-                    doc = fitz.open(stream=pdf_file['bytes'], filetype="pdf")
-                    for page_num in range(len(doc)):
-                        page = doc.load_page(page_num)
-                        pix = page.get_pixmap()
-                        st.image(pix.tobytes("png"), caption=f"Page {page_num + 1}", use_container_width=True)
-                    doc.close()
+                    st.pdf(pdf_file['bytes'])
                 except Exception as e:
                     st.error(f"Could not render preview for {pdf_file['name']}. Error: {e}")
 
@@ -159,7 +167,7 @@ def display_chat_interface():
         current_time = time.time()
         # --- Security: Chat Rate Limiting ---
         if current_time - st.session_state.last_chat_time < CHAT_COOLDOWN_SECONDS:
-            st.toast(f"Please wait {CHAT_COOLDOWN_SECONDS} seconds between messages.", icon="⏳")
+            st.toast(f"Please wait {CHAT_COOLDOWN_SECONDS} seconds between messages.", icon="⏳", duration=3000)
         else:
             st.session_state.last_chat_time = current_time
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -171,7 +179,6 @@ def display_chat_interface():
                     api_keys = check_api_keys()
                     reviewer = AIReviewer(api_keys)
                     
-                    # --- UX Improvement: Give Chatbot context of the report ---
                     analysis_context = {}
                     if st.session_state.get('validation_complete'):
                         analysis_context = {
