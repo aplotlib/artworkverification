@@ -68,21 +68,43 @@ def main():
     display_instructions()
     
     api_keys = check_api_keys()
-    run_validation, custom_instructions, reference_text = display_sidebar(api_keys)
+    run_validation, custom_instructions, reference_text, run_test_validation = display_sidebar(api_keys)
     uploaded_files = display_file_uploader()
 
-    if run_validation:
+    if run_validation or run_test_validation:
         current_time = time.time()
         # --- Security: Verification Rate Limiting ---
         if current_time - st.session_state.last_verification_time < VERIFICATION_COOLDOWN_SECONDS:
             st.toast(f"Please wait {VERIFICATION_COOLDOWN_SECONDS} seconds before running another verification.", icon="⏳")
         else:
             st.session_state.last_verification_time = current_time
-            if not uploaded_files:
+            
+            files_to_process = []
+            if run_test_validation:
+                test_files = [
+                    "Wheelchair Bag Advanced 020625.xlsx - Black.csv",
+                    "Copy of Wheelchair_Bag_Black_Shipping_Mark.pdf",
+                    "Copy of wheelchair_bag_advanced_purple_floral_240625.pdf",
+                    "Copy of wheelchair_bag_advanced_quickstart_020625.pdf",
+                    "Copy of wheelchair_bag_purple_flower_shipping_mark.pdf",
+                    "Copy of wheelchair_bag_tag_black_250625.pdf",
+                    "wheelchair_bag_tag_purple_250625.pdf",
+                    "wheelchair_bag_washtag.pdf"
+                ]
+                for file_path in test_files:
+                    try:
+                        with open(f"aplotlib/artworkverification/artworkverification-5d18da5938e3bc5d8f38020620a63caba84fdfbf/{file_path}", "rb") as f:
+                            files_to_process.append({"name": file_path, "bytes": f.read()})
+                    except FileNotFoundError:
+                        st.error(f"Test file not found: {file_path}")
+            elif uploaded_files:
+                files_to_process = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+
+            if not files_to_process:
                 st.session_state.validation_complete = True
                 st.session_state.processed_docs = []
             else:
-                st.session_state.uploaded_files_data = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+                st.session_state.uploaded_files_data = files_to_process
                 st.session_state.custom_instructions = custom_instructions
                 st.session_state.reference_text = reference_text
 
