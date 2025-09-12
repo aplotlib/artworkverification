@@ -65,7 +65,7 @@ class AIReviewer:
     def run_ai_quality_check(self, text: str) -> Dict[str, Any]:
         """Uses AI to check for spelling and grammar issues."""
         if not self.openai_client: return {"error": "OpenAI API key not found."}
-        prompt = f"""You are a proofreading expert. Analyze the following text for spelling and grammar errors. 
+        prompt = f"""You are a proofreading expert. Analyze the following text for clear, unambiguous spelling and grammar errors. Avoid flagging stylistic choices or minor punctuation issues.
         TEXT TO ANALYZE: --- {text} ---
         Respond with ONLY a JSON object containing a list called 'issues'. Each issue should have 'error', 'correction', and 'context' keys. If no issues are found, return an empty list."""
         try:
