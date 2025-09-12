@@ -67,7 +67,7 @@ class AIReviewer:
         if not self.openai_client: return {"error": "OpenAI API key not found."}
         prompt = f"""You are a proofreading expert. Analyze the following text for spelling and grammar errors. 
         TEXT TO ANALYZE: --- {text} ---
-        Respond with ONLY a JSON object containing a list of issues. Each issue should have 'error', 'correction', and 'context' keys. If no issues are found, return an empty list."""
+        Respond with ONLY a JSON object containing a list called 'issues'. Each issue should have 'error', 'correction', and 'context' keys. If no issues are found, return an empty list."""
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
@@ -105,17 +105,18 @@ class AIReviewer:
         except Exception as e:
             return f"OpenAI API Error during final summary: {e}"
 
-    def run_chatbot_interaction(self, history: List[Dict[str, str]]) -> str:
+    def run_chatbot_interaction(self, history: List[Dict[str, str]], analysis_context: Dict[str, Any] = None) -> str:
         """Engages the AI in a conversation about medical device packaging."""
         if not self.openai_client: return "OpenAI API key not found."
         
-        system_prompt = {
-            "role": "system",
-            "content": "You are a helpful assistant specializing in medical device packaging, labeling, and regulatory compliance. Answer questions clearly and concisely. You can talk about FDA regulations, UDI requirements, ISO standards, materials, and design best practices."
-        }
+        system_message = """You are a helpful assistant specializing in medical device packaging, labeling, and regulatory compliance. Answer questions clearly and concisely. You can talk about FDA regulations, UDI requirements, ISO standards, materials, and design best practices."""
+
+        if analysis_context:
+            system_message += f"\n\n## Current Analysis Context ##\nYou are also being asked to answer questions about a recently completed artwork verification report. Use the following data to answer any questions about the report:\n{json.dumps(analysis_context, indent=2)}"
+
+        system_prompt = {"role": "system", "content": system_message}
         
         # --- Security: Chat History Capping ---
-        # Only include the system prompt and the last 10 messages to keep API costs down.
         capped_history = history[-10:]
         messages = [system_prompt] + capped_history
         
