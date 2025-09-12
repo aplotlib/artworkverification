@@ -26,6 +26,7 @@ def initialize_session_state():
     st.session_state.setdefault('ai_summary', "")
     st.session_state.setdefault('ai_facts', {})
     st.session_state.setdefault('compliance_results', [])
+    st.session_state.setdefault('quality_results', {})
     st.session_state.setdefault('processed_docs', [])
     st.session_state.setdefault('uploaded_files_data', [])
     st.session_state.setdefault('messages', []) 
@@ -39,21 +40,25 @@ def main():
         st.session_state.run_ai_processing = False
         api_keys = check_api_keys()
         reviewer = AIReviewer(api_keys)
+        all_text = "\n\n".join(doc['text'] for doc in st.session_state.processed_docs)
         
-        with st.spinner("AI is analyzing... Step 1/3: Extracting key facts..."):
+        with st.spinner("AI is analyzing... Step 1/4: Extracting key facts..."):
             packaging_doc_text = next((d['text'] for d in st.session_state.processed_docs if d['doc_type'] == 'packaging_artwork'), None)
             if packaging_doc_text:
                 st.session_state.ai_facts = reviewer.run_ai_fact_extraction(packaging_doc_text)
         
-        with st.spinner("AI is analyzing... Step 2/3: Running compliance checks..."):
+        with st.spinner("AI is analyzing... Step 2/4: Running compliance checks..."):
             reference_text = st.session_state.get('reference_text', '')
             st.session_state.compliance_results = reviewer.run_ai_compliance_check(st.session_state.ai_facts, reference_text)
         
-        with st.spinner("AI is analyzing... Step 3/3: Generating executive summary..."):
+        with st.spinner("AI is analyzing... Step 3/4: Proofreading for quality..."):
+            st.session_state.quality_results = reviewer.run_ai_quality_check(all_text)
+
+        with st.spinner("AI is analyzing... Step 4/4: Generating executive summary..."):
             custom_instructions = st.session_state.get('custom_instructions', '')
             st.session_state.ai_summary = reviewer.generate_executive_summary(
                 st.session_state.processed_docs, st.session_state.global_results, 
-                st.session_state.compliance_results, custom_instructions
+                st.session_state.compliance_results, st.session_state.quality_results, custom_instructions
             )
         
         st.session_state.ai_processing_complete = True
