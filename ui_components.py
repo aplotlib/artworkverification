@@ -46,7 +46,7 @@ def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFil
     return st.file_uploader("Upload all artwork files for one product (PDF, CSV, XLSX)",
                              type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
 
-def display_results_page(global_results: List, per_doc_results: Dict, processed_docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List, **kwargs):
+def display_results_page(global_results: List, per_doc_results: Dict, processed_docs: List, skus: List, ai_summary: str, ai_facts: Dict, compliance_results: List, quality_results: Dict, **kwargs):
     st.header("📊 Verification Report")
 
     if not processed_docs:
@@ -74,6 +74,15 @@ def display_results_page(global_results: List, per_doc_results: Dict, processed_
         tabs = st.tabs(tab_titles)
 
         with tabs[0]:
+            if quality_results and 'issues' in quality_results:
+                st.subheader("AI-Powered Proofreading")
+                if not quality_results['issues']:
+                    st.markdown("✅ No spelling or grammar issues found.")
+                else:
+                    for issue in quality_results['issues']:
+                        st.markdown(f"**- Error:** {issue['error']} -> **Correction:** {issue['correction']} (`{issue['context']}`)")
+                st.divider()
+
             if compliance_results:
                 st.subheader("AI Compliance Check")
                 for res in compliance_results:
