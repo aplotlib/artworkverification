@@ -5,6 +5,7 @@ import time
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 import re
+import json
 from ai_analyzer import AIReviewer, check_api_keys
 
 # --- Security: Rate Limiting Constants ---
@@ -17,9 +18,8 @@ def display_instructions():
     with st.expander("📖 How to Use This Tool"):
         st.markdown("""
         **1. Upload Files**: Drag and drop all related artwork files for a single product to run a verification report.
-        **2. Chat with AI**: Use the chat interface at the bottom to ask general questions about medical device packaging at any time.
-        **3. Configure (Optional)**: In the sidebar, add any specific text for the AI to check for during file verification.
-        **4. Run Verification**: Click the button to start. Results will appear below as they are generated.
+        **2. Review Report**: Key metrics appear at the top. Use the tabs below for detailed findings.
+        **3. Chat with AI**: Use the chat interface at the bottom to ask about the report or general compliance questions.
         """)
 
 def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
@@ -30,12 +30,12 @@ def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str]:
         reference_text = st.text_area(
             "Enter text for the AI to verify in uploaded files, one phrase per line.",
             placeholder="Made in China\n1-year warranty",
-            max_chars=1000  # --- Security: Input Size Restriction ---
+            max_chars=1000
         )
         st.header("🤖 AI Custom Summary")
         custom_instructions = st.text_area("Ask the AI a specific question for the final summary.",
                                            placeholder="Does the manual mention a return policy?",
-                                           max_chars=1000 # --- Security: Input Size Restriction ---
+                                           max_chars=1000
                                           )
         if not api_keys.get('openai'):
             st.warning("An OpenAI API key is required for AI features.")
@@ -53,21 +53,33 @@ def display_results_page(global_results: List, per_doc_results: Dict, processed_
         st.warning("No files were uploaded. The verification report is empty.")
         return
 
+    # --- UI/UX Improvement: Summary Dashboard ---
     with st.container(border=True):
+        st.subheader("📈 Report Dashboard")
         total_failures = len([r for r in global_results if r[0] == 'failed']) + \
                        sum(1 for res in compliance_results if res.get('status') == 'Fail')
-        if total_failures > 0:
-            st.error(f"**🚨 {total_failures} Potential Issue(s) Detected**")
+        quality_issues = len(quality_results.get('issues', []))
+        total_issues = total_failures + quality_issues
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Issues", total_issues, "High" if total_issues > 0 else "None", delta_color="inverse")
+        col2.metric("Rule-Based Failures", total_failures)
+        col3.metric("Quality/Typo Issues", quality_issues)
+        col4.metric("SKUs Found", len(skus), ", ".join(skus))
+        
+        if total_issues > 0:
+            st.error(f"**🚨 {total_issues} Potential Issue(s) Detected**")
         else:
             st.success("**✅ No Potential Issues Detected**")
 
-    with st.container(border=True):
+    # --- Executive Summary ---
+    with st.expander("🤖 Read Executive Summary", expanded=True):
         if 'ai_processing_complete' not in st.session_state:
             st.info("🤖 AI analysis is running...")
         else:
-            st.subheader("🤖 Executive Summary")
             st.markdown(ai_summary)
 
+    # --- Detailed Tabs ---
     st.header("🔍 Details & Inspector")
     with st.container(border=True):
         tab_titles = ["📋 Reports & Checks"] + sorted(defaultdict(list, {d['doc_type'].replace('_', ' ').title(): [] for d in processed_docs}).keys())
@@ -75,25 +87,26 @@ def display_results_page(global_results: List, per_doc_results: Dict, processed_
 
         with tabs[0]:
             if quality_results and 'issues' in quality_results:
-                st.subheader("AI-Powered Proofreading")
-                if not quality_results['issues']:
-                    st.markdown("✅ No spelling or grammar issues found.")
-                else:
-                    for issue in quality_results['issues']:
-                        st.markdown(f"**- Error:** {issue['error']} -> **Correction:** {issue['correction']} (`{issue['context']}`)")
+                with st.expander("AI-Powered Proofreading", expanded=True):
+                    if not quality_results['issues']:
+                        st.markdown("✅ No spelling or grammar issues found.")
+                    else:
+                        for issue in quality_results['issues']:
+                            st.markdown(f"**- Error:** `{issue['error']}` -> **Correction:** `{issue['correction']}`")
+                            st.caption(f"Context: \"...{issue['context']}...\"")
                 st.divider()
 
             if compliance_results:
-                st.subheader("AI Compliance Check")
-                for res in compliance_results:
-                    icon = "✅" if res.get('status') == 'Pass' else "❌"
-                    st.markdown(f"**{icon} {res.get('phrase')}**")
-                    st.caption(f"Reasoning: {res.get('reasoning')}")
+                with st.expander("AI Compliance Check", expanded=True):
+                    for res in compliance_results:
+                        icon = "✅" if res.get('status') == 'Pass' else "❌"
+                        st.markdown(f"**{icon} {res.get('phrase')}**")
+                        st.caption(f"Reasoning: {res.get('reasoning')}")
                 st.divider()
             
-            st.subheader("Rule-Based Checks")
-            for status, msg, _ in global_results:
-                st.markdown(f"{'✅' if status == 'passed' else '❌'} {msg}")
+            with st.expander("Rule-Based Checks", expanded=True):
+                for status, msg, _ in global_results:
+                    st.markdown(f"{'✅' if status == 'passed' else '❌'} {msg}")
 
         docs_by_type = defaultdict(list)
         for doc in processed_docs: docs_by_type[doc['doc_type'].replace('_', ' ').title()].append(doc)
@@ -130,7 +143,7 @@ def display_pdf_previews(files: List[Dict[str, Any]]):
 def display_chat_interface():
     """Displays the standalone AI chat interface with rate limiting."""
     st.header("💬 Chat with AI Assistant")
-    st.caption("Ask me anything about medical device packaging, labeling, or compliance.")
+    st.caption("Ask me about the report or anything related to medical device packaging.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -142,7 +155,7 @@ def display_chat_interface():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if prompt := st.chat_input("What is a UDI?"):
+    if prompt := st.chat_input("Ask about the verification report..."):
         current_time = time.time()
         # --- Security: Chat Rate Limiting ---
         if current_time - st.session_state.last_chat_time < CHAT_COOLDOWN_SECONDS:
@@ -157,7 +170,18 @@ def display_chat_interface():
                 with st.spinner("Thinking..."):
                     api_keys = check_api_keys()
                     reviewer = AIReviewer(api_keys)
-                    response = reviewer.run_chatbot_interaction(st.session_state.messages)
+                    
+                    # --- UX Improvement: Give Chatbot context of the report ---
+                    analysis_context = {}
+                    if st.session_state.get('validation_complete'):
+                        analysis_context = {
+                            "Executive Summary": st.session_state.ai_summary,
+                            "Rule-Based Results": st.session_state.global_results,
+                            "AI Compliance Results": st.session_state.compliance_results,
+                            "AI Quality Results": st.session_state.quality_results
+                        }
+
+                    response = reviewer.run_chatbot_interaction(st.session_state.messages, analysis_context)
                     st.markdown(response)
             
             st.session_state.messages.append({"role": "assistant", "content": response})
