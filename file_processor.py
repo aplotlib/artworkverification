@@ -8,8 +8,9 @@ import pytesseract
 import re
 from typing import List, Dict, Any, Tuple
 from config import AppConfig
-from colormath.color_objects import sRGBColor
+from colormath.color_objects import sRGBColor, LabColor
 from colormath.color_diff import delta_e_cie2000
+from colormath.color_conversions import convert_color # UPGRADE: Imported the correct conversion function
 from collections import defaultdict
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -17,39 +18,43 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 @st.cache_data
 def process_files_cached(files: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
     """A cached wrapper around the main file processing logic."""
-    processor = DocumentProcessor(files)
+    # Convert files to a hashable format for caching
+    frozen_files = [
+        {"name": f["name"], "bytes": tuple(f["bytes"])} for f in files
+    ]
+    processor = DocumentProcessor(frozen_files)
     return processor.process_files()
 
 class DocumentProcessor:
     """Handles all file reading, text extraction, and brand compliance analysis."""
 
     def __init__(self, files: List[Dict[str, Any]]):
-        self.files = [self._freeze_file(f) for f in files]
+        self.files = files
         self._setup_brand_colors()
-
-    def _freeze_file(self, file_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """Converts file bytes to a hashable tuple for caching."""
-        return {"name": file_dict["name"], "bytes": tuple(file_dict["bytes"])}
 
     def _setup_brand_colors(self):
         """Pre-calculates LabColor objects for brand colors for efficient comparison."""
         self.brand_colors_lab = []
         main_color_rgb = AppConfig.BRAND_GUIDE['colors']['brand_color']['rgb']
+        main_srgb = sRGBColor(rgb_r=main_color_rgb[0], rgb_g=main_color_rgb[1], rgb_b=main_color_rgb[2], is_upscaled=True)
         self.brand_colors_lab.append({
             "name": AppConfig.BRAND_GUIDE['colors']['brand_color']['name'],
-            "lab": sRGBColor(rgb_r=main_color_rgb[0], rgb_g=main_color_rgb[1], rgb_b=main_color_rgb[2], is_upscaled=True).convert_to('lab')
+            # FIX: Used the correct convert_color function
+            "lab": convert_color(main_srgb, LabColor)
         })
         for color in AppConfig.BRAND_GUIDE['colors']['complementary_colors']:
             rgb = color['rgb']
+            srgb = sRGBColor(rgb_r=rgb[0], rgb_g=rgb[1], rgb_b=rgb[2], is_upscaled=True)
             self.brand_colors_lab.append({
                 "name": color['name'],
-                "lab": sRGBColor(rgb_r=rgb[0], rgb_g=rgb[1], rgb_b=rgb[2], is_upscaled=True).convert_to('lab')
+                "lab": convert_color(srgb, LabColor)
             })
 
     def _get_closest_brand_color(self, rgb_tuple: Tuple[int, int, int]) -> Tuple[str, float]:
         """Finds the closest brand color to a given RGB value using Delta E."""
         if not rgb_tuple or len(rgb_tuple) < 3: return "N/A", float('inf')
-        color_to_check_lab = sRGBColor(rgb_r=rgb_tuple[0], rgb_g=rgb_tuple[1], rgb_b=rgb_tuple[2], is_upscaled=True).convert_to('lab')
+        color_to_check_srgb = sRGBColor(rgb_r=rgb_tuple[0], rgb_g=rgb_tuple[1], rgb_b=rgb_tuple[2], is_upscaled=True)
+        color_to_check_lab = convert_color(color_to_check_srgb, LabColor)
         
         min_delta_e = float('inf')
         closest_color_name = "Non-Brand Color"
@@ -61,6 +66,17 @@ class DocumentProcessor:
                 closest_color_name = brand_color["name"]
         
         return closest_color_name, min_delta_e
+
+    def _classify_document(self, filename: str) -> Tuple[str, str]:
+        """Classifies a document and determines if it's shared or unique."""
+        fn_lower = filename.lower()
+        doc_type = "uncategorized"
+        for dt, keywords in AppConfig.DOC_TYPE_MAP.items():
+            if any(keyword in fn_lower for keyword in keywords):
+                doc_type = dt
+                break
+        file_nature = "Unique Artwork" if not any(keyword in fn_lower for keyword in AppConfig.SHARED_FILE_KEYWORDS) else "Shared File"
+        return doc_type, file_nature
 
     def _analyze_pdf_brand_compliance(self, file_bytes: tuple) -> Dict[str, Any]:
         """Extracts fonts and colors from a PDF for brand compliance checking."""
@@ -101,7 +117,7 @@ class DocumentProcessor:
             return {'success': False, 'error': f"OCR extraction failed: {e}"}
 
     def process_files(self) -> Tuple[List[Dict[str, Any]], List[str]]:
-        """Processes all files, now including brand compliance checks."""
+        """Processes all files, including brand compliance checks."""
         processed_docs = []
         all_skus = set()
 
@@ -120,9 +136,7 @@ class DocumentProcessor:
                     doc_data['qr_codes'] = ocr_result['qr_data']
                 else:
                     st.warning(f"OCR failed for '{file_name}': {ocr_result['error']}")
-
-                brand_result = self._analyze_pdf_brand_compliance(file_bytes)
-                doc_data['brand_compliance'] = brand_result
+                doc_data['brand_compliance'] = self._analyze_pdf_brand_compliance(file_bytes)
             
             elif file_name.lower().endswith(('.csv', '.xlsx')):
                 try:
@@ -133,7 +147,7 @@ class DocumentProcessor:
                     st.warning(f"Could not read spreadsheet '{file_name}': {e}")
             
             doc_data['dimensions'] = re.findall(r'(\d+\.?\d*mm\s?\(?[W|H|D]\)?\s?x\s?\d+\.?\d*mm\s?\(?[W|H|D]\)?)', doc_data['text'])
-            skus_found = re.findall(r'\b(LVA\d{4,}[A-Z]*)\b', doc_data['text'], re.IGNORECASE)
+            skus_found = re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', doc_data['text'], re.IGNORECASE)
             for sku in skus_found:
                 all_skus.add(sku.upper())
 
