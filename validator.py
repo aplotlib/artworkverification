@@ -7,7 +7,7 @@ class ArtworkValidator:
 
     def __init__(self, all_text: str, reference_text: str = None):
         self.all_text = all_text
-        self.reference_text = reference_text # This can now be the dynamically pasted checklist
+        self.reference_text = reference_text
 
     def validate(self, docs: List[Dict[str, any]]) -> Tuple[List, Dict]:
         """Runs all validation checks and returns global and per-document results."""
@@ -27,9 +27,6 @@ class ArtworkValidator:
             upcs = set(re.findall(r'\b\d{12}\b', packaging_text))
             udis = set(re.findall(r'\(01\)\d{14}', packaging_text))
             skus = set(re.findall(r'\b(LVA\d{4,}[A-Z]*)\b', packaging_text, re.IGNORECASE))
-
-            # REMOVED: Hardcoded product name check to make the tool universal.
-            # Product-specific checks should now be handled by the dynamic user checklist.
 
             if not upcs:
                 global_results.append(('failed', "No 12-digit UPCs found on packaging artwork.", "no_upc_on_packaging"))
