@@ -21,7 +21,10 @@ class AppConfig:
     AI_API_TIMEOUT = 45
 
     BRAND_GUIDE = {
-        "fonts": {"main": ["Poppins"], "secondary": ["Montserrat", "Arial"]},
+        "fonts": {
+            "main": ["Poppins"],
+            "secondary": ["Montserrat", "Arial"]
+        },
         "colors": {
             "brand_color": {"name": "Vive Teal", "hex": "#23b2be", "rgb": (35, 178, 190)},
             "complementary_colors": [
@@ -31,10 +34,14 @@ class AppConfig:
                 {"name": "Vive Gray", "hex": "#777473", "rgb": (119, 116, 115)}
             ]
         },
-        "color_tolerance": 20.0
+        "color_tolerance": 20.0,
+        # UPGRADE: Added a list of neutral colors to ignore during brand compliance checks.
+        "COLOR_IGNORE_LIST": [
+            (0, 0, 0),       # Black
+            (255, 255, 255)  # White
+        ]
     }
 
-    # UPGRADE: Added a default checklist based on analysis of provided files.
     DEFAULT_CHECKLIST = """
 # Content & Compliance
 - Country of Origin ("Made in China") is present on packaging and product.
