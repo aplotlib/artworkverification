@@ -26,6 +26,7 @@ class ArtworkValidator:
 
             upcs = set(re.findall(r'\b\d{12}\b', packaging_text))
             udis = set(re.findall(r'\(01\)\d{14}', packaging_text))
+            # UPGRADE: Regex now supports both LVA and CSH SKU formats.
             skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', packaging_text, re.IGNORECASE))
 
             if not upcs:
@@ -60,6 +61,7 @@ class ArtworkValidator:
 
         # --- Per-Document Check based on the pasted checklist ---
         if self.reference_text:
+            # UPGRADE: Checklist parser now ignores comments (lines starting with #).
             required_phrases = [phrase.strip() for phrase in self.reference_text.split('\n') if phrase.strip() and not phrase.strip().startswith('#')]
             for doc in docs:
                 doc_text_lower = doc['text'].lower()
