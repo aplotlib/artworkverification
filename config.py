@@ -1,11 +1,12 @@
 class AppConfig:
     """Holds the configuration constants for the application."""
-    APP_TITLE = "Artwork Verification Tool"
-    PAGE_ICON = "✅"
-    
+    # NEW: Renamed the app and updated the icon for a fresh look.
+    APP_TITLE = "VAVE: Vive Health Artwork Verification Engine"
+    PAGE_ICON = "🚀"
+
     # Keywords for classifying documents as "shared" across variants
     SHARED_FILE_KEYWORDS = ['manual', 'qsg', 'quickstart', 'washtag', 'logo', 'thank you', 'ty_card']
-    
+
     # Expanded mapping for more accurate document type classification
     DOC_TYPE_MAP = {
         'packaging_artwork': ['packaging', 'box'],
@@ -17,6 +18,6 @@ class AppConfig:
         'inner_tag': ['inner_tag'],
         'thank_you_card': ['thank you', 'ty_card']
     }
-    
+
     # AI configuration
     AI_BATCH_MAX_CHARS = 10000  # Max characters per API call to avoid limits
