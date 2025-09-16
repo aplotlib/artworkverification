@@ -12,11 +12,27 @@ from config import AppConfig
 # Allow processing of truncated image files which can sometimes occur in PDFs
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+# UPGRADE: Cache the entire file processing function to speed up subsequent runs.
+@st.cache_data
+def process_files_cached(files: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """A cached wrapper around the main file processing logic."""
+    # We instantiate the processor inside the cached function.
+    processor = DocumentProcessor(files)
+    return processor.process_files()
+
+
 class DocumentProcessor:
     """Handles all file reading, text extraction (OCR), and data parsing."""
 
     def __init__(self, files: List[Dict[str, Any]]):
-        self.files = files
+        self.files = [self._freeze_file(f) for f in files]
+
+    def _freeze_file(self, file_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Converts file bytes to a hashable tuple for caching."""
+        return {
+            "name": file_dict["name"],
+            "bytes": tuple(file_dict["bytes"])
+        }
 
     def _classify_document(self, filename: str) -> Tuple[str, str]:
         """Classifies a document and determines if it's shared or unique."""
@@ -34,18 +50,17 @@ class DocumentProcessor:
             
         return doc_type, file_nature
 
-    def _extract_from_pdf_ocr(self, file_bytes: bytes) -> Dict[str, Any]:
+    def _extract_from_pdf_ocr(self, file_bytes: tuple) -> Dict[str, Any]:
         """Extracts text and QR codes from a PDF using OCR with enhanced error handling."""
         text, qr_data = "", []
         try:
-            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            # Convert tuple back to bytes for processing
+            file_bytes_io = BytesIO(bytes(file_bytes))
+            with fitz.open(stream=file_bytes_io, filetype="pdf") as doc:
                 for page_num, page in enumerate(doc):
-                    # Render page to a high-DPI image for better OCR accuracy
                     pix = page.get_pixmap(dpi=300)
                     with Image.open(BytesIO(pix.tobytes("png"))) as img:
-                        # Pre-process image for OCR: convert to grayscale and apply a threshold
                         processed_img = img.convert('L').point(lambda x: 0 if x < 128 else 255, '1')
-                        
                         page_text = pytesseract.image_to_string(processed_img)
                         text += f"\n\n--- Page {page_num + 1} ---\n{page_text}"
                         
@@ -59,7 +74,6 @@ class DocumentProcessor:
 
     def _find_sku_in_dataframe(self, df: pd.DataFrame) -> str | None:
         """Finds the Product SKU Code in a given DataFrame."""
-        # Search for a cell containing "PRODUCT SKU CODE" and grab the value from two cells to the right.
         np_array = df.to_numpy()
         for row_idx, row in enumerate(np_array):
             for col_idx, cell in enumerate(row):
@@ -88,17 +102,17 @@ class DocumentProcessor:
                         file_content = result.get('text', '')
                         qr_codes = result.get('qr_data', [])
                     else:
-                        file_content = f"Error processing PDF: {result.get('error', 'Unknown error')}"
                         st.warning(f"Could not fully process '{file_name}': {result.get('error')}")
 
                 elif file_name.lower().endswith(('.csv', '.xlsx')):
                     try:
-                        df = pd.read_excel(BytesIO(file_bytes), header=None).fillna('') if file_name.lower().endswith('.xlsx') else pd.read_csv(BytesIO(file_bytes), header=None).fillna('')
+                        # Convert tuple back to bytes for processing
+                        file_bytes_io = BytesIO(bytes(file_bytes))
+                        df = pd.read_excel(file_bytes_io, header=None).fillna('') if file_name.lower().endswith('.xlsx') else pd.read_csv(file_bytes_io, header=None).fillna('')
                         file_content = df.to_string()
                         sku = self._find_sku_in_dataframe(df)
                         if sku: all_skus.add(sku)
                     except Exception as e:
-                        file_content = f"Error reading spreadsheet file: {e}"
                         st.warning(f"Could not read spreadsheet '{file_name}': {e}")
 
                 dims = re.findall(r'(\d+\.?\d*mm\s?\(?[W|H|D]\)?\s?x\s?\d+\.?\d*mm\s?\(?[W|H|D]\)?)', file_content)
@@ -113,8 +127,7 @@ class DocumentProcessor:
                     all_skus.add(sku.upper())
             
             except Exception as e:
-                # UPGRADE: More robust error handling for individual file processing failures.
                 st.error(f"Critical error while processing '{file.get('name', 'Unknown')}'. Skipping file. Error: {e}")
-                continue # Move to the next file
+                continue
 
         return processed_docs, list(filter(None, all_skus))
