@@ -26,7 +26,7 @@ class ArtworkValidator:
 
             upcs = set(re.findall(r'\b\d{12}\b', packaging_text))
             udis = set(re.findall(r'\(01\)\d{14}', packaging_text))
-            skus = set(re.findall(r'\b(LVA\d{4,}[A-Z]*)\b', packaging_text, re.IGNORECASE))
+            skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', packaging_text, re.IGNORECASE))
 
             if not upcs:
                 global_results.append(('failed', "No 12-digit UPCs found on packaging artwork.", "no_upc_on_packaging"))
@@ -49,29 +49,22 @@ class ArtworkValidator:
             # --- Consistency Check against Other Documents ---
             other_text = " ".join(d['text'] for d in other_docs).replace("\n", " ")
             other_upcs = set(re.findall(r'\b\d{12}\b', other_text))
-            other_skus = set(re.findall(r'\b(LVA\d{4,}[A-Z]*)\b', other_text, re.IGNORECASE))
+            other_skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', other_text, re.IGNORECASE))
 
             for other_upc in other_upcs:
-                if other_upc not in upcs:
+                if upcs and other_upc not in upcs:
                     global_results.append(('failed', f"UPC `{other_upc}` from an auxiliary file does not match any packaging UPC.", "consistency_fail"))
-                else:
-                     global_results.append(('passed', f"UPC `{other_upc}` in auxiliary file is consistent with packaging.", "consistency_pass"))
-
             for other_sku in other_skus:
                 if skus and other_sku not in skus:
                     global_results.append(('failed', f"SKU `{other_sku}` from an auxiliary file does not match any packaging SKU.", "consistency_fail"))
-                elif skus:
-                    global_results.append(('passed', f"SKU `{other_sku}` in auxiliary file is consistent with packaging.", "consistency_pass"))
 
         # --- Per-Document Check based on the pasted checklist ---
         if self.reference_text:
-            required_phrases = [phrase.strip() for phrase in self.reference_text.split('\n') if phrase.strip()]
+            required_phrases = [phrase.strip() for phrase in self.reference_text.split('\n') if phrase.strip() and not phrase.strip().startswith('#')]
             for doc in docs:
                 doc_text_lower = doc['text'].lower()
                 for phrase in required_phrases:
                     if phrase.lower() not in doc_text_lower:
                         per_doc_results[doc['filename']].append(('failed', f"Missing required text: '{phrase}'"))
-                    else:
-                        per_doc_results[doc['filename']].append(('passed', f"Found required text: '{phrase}'"))
 
         return global_results, per_doc_results
