@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+import os
 from config import AppConfig
 from file_processor import process_files_cached
 from validator import ArtworkValidator
@@ -76,22 +77,35 @@ def main():
     elif run_validation or run_test_validation:
         files_to_process = []
         if run_test_validation:
+            # --- Test Validation Setup ---
+            # For this to work, create a 'test_data' folder in the same directory as main.py
+            # and place the test files inside it.
+            test_data_dir = 'test_data'
+            if not os.path.exists(test_data_dir):
+                st.error(f"Test data directory not found. Please create a '{test_data_dir}' folder and add test files.")
+                return
+
             test_files = [
                 "Wheelchair Bag Advanced 020625.xlsx - Black.csv", "Wheelchair_Bag_Black_Shipping_Mark.pdf",
                 "wheelchair_bag_advanced_purple_floral_240625.pdf", "wheelchair_bag_advanced_quickstart_020625.pdf",
                 "wheelchair_bag_purple_flower_shipping_mark.pdf", "wheelchair_bag_tag_black_250625.pdf",
                 "wheelchair_bag_tag_purple_250625.pdf", "wheelchair_bag_washtag.pdf"
             ]
-            for file_path in test_files:
+            for file_name in test_files:
+                file_path = os.path.join(test_data_dir, file_name)
                 try:
-                    with open(file_path, "rb") as f: files_to_process.append({"name": file_path, "bytes": f.read()})
-                except FileNotFoundError: st.error(f"Test file not found: {file_path}")
+                    with open(file_path, "rb") as f: files_to_process.append({"name": file_name, "bytes": f.read()})
+                except FileNotFoundError: 
+                    st.error(f"Test file not found: {file_path}")
+                    return
         else:
             files_to_process = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
 
         if files_to_process:
             with st.spinner("Step 1/2: Processing and extracting text from files..."):
-                processor_results = process_files_cached([{"name": f["name"], "bytes": tuple(f["bytes"])} for f in files_to_process])
+                # Use a tuple of file data to make it hashable for caching
+                file_tuples = tuple({"name": f["name"], "bytes": tuple(f["bytes"])} for f in files_to_process)
+                processor_results = process_files_cached(file_tuples)
             
             with st.spinner("Step 2/2: Running validation and AI analysis... This may take a moment."):
                 analysis_results = run_analysis_cached(processor_results, must_contain_text, must_not_contain_text, "", ai_provider)
