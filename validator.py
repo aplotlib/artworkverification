@@ -3,58 +3,63 @@ from typing import List, Tuple, Dict
 from collections import defaultdict
 
 class ArtworkValidator:
-    """Performs core, rule-based validation checks on the combined text."""
+    """Performs rule-based validation checks based on a primary source."""
 
     def __init__(self, all_text: str):
         self.all_text = all_text
 
-    def validate(self, docs: List[Dict[str, any]]) -> Tuple[List, Dict]:
-        """Runs all validation checks and returns global and per-document results."""
+    def validate(self, docs: List[Dict[str, any]], primary_validation_text: str) -> Tuple[List, Dict]:
+        """
+        Runs all validation checks against a primary source.
+
+        The primary source is determined in two ways:
+        1. If a file named 'Primary_Validation_*.pdf' is found, its text is used.
+        2. Otherwise, the user-provided 'primary_validation_text' is used.
+        """
         global_results = []
         per_doc_results = defaultdict(list)
 
-        packaging_docs = [d for d in docs if d['doc_type'] == 'packaging_artwork']
-        other_docs = [d for d in docs if d['doc_type'] != 'packaging_artwork']
+        primary_source_text = ""
+        primary_source_name = ""
 
-        # --- Primary Validation on Packaging Artwork ---
-        if not packaging_docs:
-            global_results.append(('failed', "No packaging artwork file was found for primary validation.", "no_packaging"))
-        else:
-            packaging_text = " ".join(d['text'] for d in packaging_docs).replace("\n", " ")
-            packaging_qrs = "".join(qr for d in packaging_docs for qr in d['qr_codes'])
+        # 1. Check for a Primary_Validation file
+        primary_doc = next((d for d in docs if "Primary_Validation" in d.get('filename', '')), None)
 
-            upcs = set(re.findall(r'\b\d{12}\b', packaging_text))
-            udis = set(re.findall(r'\(01\)\d{14}', packaging_text))
-            skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', packaging_text, re.IGNORECASE))
-
-            if not upcs:
-                global_results.append(('failed', "No 12-digit UPCs found on packaging artwork.", "no_upc_on_packaging"))
-            if not udis:
-                global_results.append(('failed', "No UDI found on packaging artwork.", "no_udi_on_packaging"))
-            if not skus:
-                global_results.append(('failed', "No SKU found on packaging artwork.", "no_sku_on_packaging"))
-
-            for upc in upcs:
-                if not any(upc in udi for udi in udis):
-                    global_results.append(('failed', f"Packaging UPC `{upc}` does not have a matching UDI on the packaging.", f"mismatch_{upc}"))
-                else:
-                    global_results.append(('passed', f"Packaging UPC `{upc}` has a matching UDI.", f"match_{upc}"))
-
-                if packaging_qrs and upc not in packaging_qrs:
-                    global_results.append(('failed', f"Packaging UPC `{upc}` was not found in any packaging QR codes.", f"qr_mismatch_{upc}"))
-                elif packaging_qrs:
-                    global_results.append(('passed', f"Packaging UPC `{upc}` was found in a packaging QR code.", f"qr_match_{upc}"))
-
-            # --- Consistency Check against Other Documents ---
-            other_text = " ".join(d['text'] for d in other_docs).replace("\n", " ")
-            other_upcs = set(re.findall(r'\b\d{12}\b', other_text))
-            other_skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', other_text, re.IGNORECASE))
-
-            for other_upc in other_upcs:
-                if upcs and other_upc not in upcs:
-                    global_results.append(('failed', f"UPC `{other_upc}` from an auxiliary file does not match any packaging UPC.", "consistency_fail"))
-            for other_sku in other_skus:
-                if skus and other_sku not in skus:
-                    global_results.append(('failed', f"SKU `{other_sku}` from an auxiliary file does not match any packaging SKU.", "consistency_fail"))
+        if primary_doc:
+            primary_source_text = primary_doc['text']
+            primary_source_name = f"file '{primary_doc['filename']}'"
+            docs.remove(primary_doc) # Remove it from the list of docs to be checked
+        elif primary_validation_text.strip():
+            primary_source_text = primary_validation_text
+            primary_source_name = "the user-provided text"
         
+        if not primary_source_text:
+            global_results.append(('failed', "No primary validation source was provided or found. Skipping rule-based checks.", "no_primary_source"))
+            return global_results, per_doc_results
+
+        # Extract key identifiers from the primary source
+        primary_upcs = set(re.findall(r'\b\d{12}\b', primary_source_text))
+        primary_udis = set(re.findall(r'\(01\)\d{14}', primary_source_text))
+        primary_skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', primary_source_text, re.IGNORECASE))
+        
+        global_results.append(('passed', f"Validation is being performed against {primary_source_name}.", "primary_source_info"))
+
+
+        # --- Consistency Check against Other Documents ---
+        for doc in docs:
+            doc_text = doc['text'].replace("\n", " ")
+            doc_upcs = set(re.findall(r'\b\d{12}\b', doc_text))
+            doc_skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', doc_text, re.IGNORECASE))
+
+            for upc in doc_upcs:
+                if primary_upcs and upc not in primary_upcs:
+                    global_results.append(('failed', f"UPC `{upc}` from '{doc['filename']}' does not match any UPC in the primary source.", "consistency_fail_upc"))
+            
+            for sku in doc_skus:
+                if primary_skus and sku.upper() not in [s.upper() for s in primary_skus]:
+                    global_results.append(('failed', f"SKU `{sku}` from '{doc['filename']}' does not match any SKU in the primary source.", "consistency_fail_sku"))
+
+        if not global_results:
+             global_results.append(('passed', f"All documents are consistent with {primary_source_name}.", "consistency_pass"))
+
         return global_results, per_doc_results
