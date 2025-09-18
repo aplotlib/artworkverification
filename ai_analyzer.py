@@ -67,9 +67,22 @@ class AIReviewer:
                 return {"success": False, "error": f"An unexpected AI error occurred: {e}"}
 
     def run_ai_ocr_correction(self, text: str) -> str:
-        """Uses AI to correct OCR errors."""
-        prompt = f"""You are an OCR correction expert. Review the following text and fix scanning or recognition errors. Preserve original formatting and content. Return only the corrected text.
-        RAW OCR TEXT: --- {text} ---"""
+        """Uses AI to correct OCR errors with improved context."""
+        prompt = f"""You are an expert in correcting OCR (Optical Character Recognition) errors from artwork and packaging documents. Please review the following text and fix any scanning or recognition errors.
+
+Pay close attention to common OCR mistakes, such as:
+- Confusing the number '1' with the letter 'I' or 'l'.
+- Confusing the number '0' with the letter 'O'.
+- Misinterpreting characters in SKUs, UPCs, and barcodes. For example, a SKU like "LVA3100BLK" might be misread as "LVA3I00BLK".
+- Incorrectly spacing out numbers in a barcode.
+
+Preserve the original formatting and content as much as possible. Only return the corrected text.
+
+RAW OCR TEXT:
+---
+{text}
+---
+"""
         model = AppConfig.AI_MODELS[self.provider]['standard']
         result = self._safe_ai_call(prompt, model)
         return result["data"] if result["success"] else text
