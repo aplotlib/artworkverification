@@ -93,17 +93,24 @@ def display_dynamic_checklist(brand: str, batch_key: str):
         current_state = st.session_state.checklist_state[batch_key]
 
         total_items = sum(len(items) for items in checklist_data.values())
-        num_checked = sum(1 for item_key in current_state if current_state[item_key])
+        
+        # Calculate checked items based on the current state
+        num_checked = sum(1 for item_key in current_state if current_state.get(item_key, False))
         
         for category, items in checklist_data.items():
             st.subheader(category)
-            for i, item in enumerate(items):
-                item_key = f"{brand}_{category}_{item}"
-                is_checked = st.checkbox(item, value=current_state.get(item_key, False), key=f"check_{batch_key}_{i}_{item}")
-                current_state[item_key] = is_checked
+            for item in items:
+                # CRITICAL FIX: Create a unique key for each checkbox
+                unique_key = f"check_{batch_key}_{category}_{item}"
+                item_state_key = f"{brand}_{category}_{item}"
+                
+                is_checked = st.checkbox(item, value=current_state.get(item_state_key, False), key=unique_key)
+                current_state[item_state_key] = is_checked
         
         st.divider()
         if total_items > 0:
+            # Recalculate num_checked after rendering checkboxes
+            num_checked = sum(1 for item_key in current_state if current_state.get(item_key, False))
             progress = num_checked / total_items if total_items > 0 else 0
             st.progress(progress, text=f"{num_checked} / {total_items} items completed")
             if progress == 1.0:
