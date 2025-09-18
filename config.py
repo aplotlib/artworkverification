@@ -43,22 +43,111 @@ class AppConfig:
 
     CHECKLISTS = {
         "Vive": {
-            "Packaging": ["Product Name Consistency", "SKU ID", "UPC and UDI", "Image Visual", "Country Origin (Made in China)", "Made in China sticker"],
-            "Manual": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "Country Origin", "Check dims if it will fit in the box"],
-            "Inserts/Stickers": ["Thank you Card (Vive Products only)"],
-            "Quickstart, IFU": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "UDI", "Product QR Code", "Master Carton UDI and Shipping Mark", "Giftbox UDI on Packaging"],
-            "Washtag": ["Multivariant? (one washtag/size or color)", "Country Origin"],
-            "Shipping Mark": ["Confirm qty-ctn from R&D", "Confirm Origin (Made in ...)"],
-            "QC Sheet (Cross Check with R&D)": ["Packaging Dims", "Logo Print/tag placement/color", "Wash tag placement/color", "UDI Info", "Sticker placements", "Match barcode on artworks"]
+            "Packaging": [
+                "Product Name Consistency",
+                "SKU ID",
+                "UPC and UDI",
+                "Image Visual",
+                "Country Origin (Made in China)",
+                "Made in China sticker"
+            ],
+            "Manual": [
+                "Product Name Consistency",
+                "SKU ID",
+                "Outlined Texts",
+                "QR Code matches the shortlink",
+                "Country Origin",
+                "Check dims if it will fit in the box"
+            ],
+            "Quickstart, IFU": [
+                "Product Name Consistency",
+                "SKU ID",
+                "Outlined Texts",
+                "QR Code matches the shortlink",
+                "UDI",
+                "Product QR Code",
+                "Giftbox UDI on Packaging",
+                "Master Carton UDI on Shipping Mark"
+            ],
+            "Inserts/Stickers": [
+                "Thank you Card (Vive Products only)",
+                "Warning label",
+                "Other Inserts (e.g. Vive Now, Neoprene, Air out, Fit info)"
+            ],
+            "Washtag": [
+                "Country Origin",
+                "Multivariant? (one washtag/size or color)"
+            ],
+            "Shipping Mark": [
+                "Confirm qty-ctn from R&D",
+                "Confirm Origin (Made in ...)"
+            ],
+            "QC Sheet (Cross Check with R&D)": [
+                "Packaging Dims",
+                "Logo Print/tag placement/color",
+                "Wash tag placement/color",
+                "UDI Info",
+                "Sticker placements",
+                "Match barcode on artworks"
+            ],
+            "Final Checks": [
+                "All text checked with AI",
+                "QR Codes scanned with mobile app"
+            ]
         },
         "Coretech": {
-            "Packaging": ["Product Name Consistency", "SKU ID", "UPC and UDI", "Image Visual", "Country Origin (Made in China)"],
-            "Billing Sticker": ["SKU ID", "UPC and UDI", "HCPCS and Lot #", "Match Size to Barcode and UDI"],
-            "Manual": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "Country Origin", "Check dims if it will fit in the box"],
-            "Other Inserts/Sticker": ["Vive Now, Neoprene Insert, Air out insert, Fit info, etc.", "Warning label"],
-            "Quickstart, IFU": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "UDI", "Product QR Code", "Master Carton UDI an Shipping Mark"],
-            "Washtag": ["Multivariant? (one washtag/size or color)", "Country Origin"],
-            "Shipping Mark": ["Confirm qty-ctn from R&D", "Confirm Origin (Made in ...)"],
-            "QC Sheet (Cross Check with R&D)": ["Packaging Dims", "Logo Print/tag placement/color", "Wash tag placement/color", "UDI Info", "Sticker placements", "Match barcode on artworks"]
+            "Packaging": [
+                "Product Name Consistency",
+                "SKU ID",
+                "UPC and UDI",
+                "Image Visual",
+                "Country Origin (Made in China)"
+            ],
+            "Manual": [
+                "Product Name Consistency",
+                "SKU ID",
+                "Outlined Texts",
+                "QR Code matches the shortlink",
+                "Check dims if it will fit in the box"
+            ],
+            "Quickstart, IFU": [
+                "Product Name Consistency",
+                "SKU ID",
+                "Outlined Texts",
+                "QR Code matches the shortlink",
+                "UDI",
+                "Product QR Code",
+                "Master Carton UDI on Shipping Mark"
+            ],
+            "Inserts/Stickers": [
+                "Billing Sticker",
+                "Warning label",
+                "Other Inserts (e.g. Vive Now, Neoprene, Air out)"
+            ],
+            "Billing Sticker Details": [
+                "SKU ID",
+                "HCPCS and Lot #",
+                "Match Size to Barcode and UDI"
+            ],
+            "Washtag": [
+                "Country Origin",
+                "Multivariant? (one washtag/size or color)"
+            ],
+            "Shipping Mark": [
+                "Confirm qty-ctn from R&D",
+                "Confirm Origin (Made in ...)"
+            ],
+            "QC Sheet (Cross Check with R&D)": [
+                "Packaging Dims",
+                "Logo Print/tag placement/color",
+                "Wash tag placement/color",
+                "UDI Info",
+                "Sticker placements",
+                "Match barcode on artworks"
+            ],
+            "Final Checks": [
+                "All text checked with AI",
+                "QR Codes scanned with mobile app"
+            ]
         }
     }
