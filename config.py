@@ -25,11 +25,6 @@ class AppConfig:
             "standard": "gpt-4o-mini",
             "advanced": "gpt-4o",
             "chat": "gpt-4o-mini"
-        },
-        "anthropic": {
-            "standard": "claude-3-sonnet-20240229",
-            "advanced": "claude-3-opus-20240229",
-            "chat": "claude-3-sonnet-20240229"
         }
     }
 
@@ -164,3 +159,4 @@ class AppConfig:
             ]
         }
     }
+}
