@@ -51,11 +51,22 @@ def run_analysis_cached(_file_tuples, must_contain_text, must_not_contain_text, 
 def main():
     st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
     
-    if 'batches' not in st.session_state: st.session_state.batches = {}
-    if 'current_batch_sku' not in st.session_state: st.session_state.current_batch_sku = None
-    if 'messages' not in st.session_state: st.session_state.messages = []
-    if 'brand_selection' not in st.session_state: st.session_state.brand_selection = "Vive"
-    if 'run_validation' not in st.session_state: st.session_state.run_validation = False
+    # --- Session State Initialization ---
+    # This ensures all necessary keys are present from the start.
+    if 'batches' not in st.session_state: 
+        st.session_state.batches = {}
+    if 'current_batch_sku' not in st.session_state: 
+        st.session_state.current_batch_sku = None
+    if 'messages' not in st.session_state: 
+        st.session_state.messages = []
+    if 'brand_selection' not in st.session_state: 
+        st.session_state.brand_selection = "Vive"
+    if 'run_validation' not in st.session_state: 
+        st.session_state.run_validation = False
+    # This new key will be exclusively for the selectbox widget
+    if 'selected_batch_for_review' not in st.session_state:
+        st.session_state.selected_batch_for_review = None
+
 
     api_keys = check_api_keys()
     display_sidebar(api_keys)
@@ -78,12 +89,16 @@ def main():
                     st.session_state.get('must_not_contain', ''), 
                     st.session_state.get('custom_instructions', ''), 
                     st.session_state.get('ai_provider', 'openai'),
-                    st.session_state.get('primary_validation_text', '') # Pass the new text
+                    st.session_state.get('primary_validation_text', '')
                 )
 
                 batch_key = analysis_results.get("skus", [])[0] if analysis_results.get("skus") else f"Batch-{int(time.time())}"
-                st.session_state.current_batch_sku = batch_key
                 
+                # This is now safe because 'current_batch_sku' is not tied to a widget.
+                st.session_state.current_batch_sku = batch_key
+                # We also update the widget's key to keep the UI in sync.
+                st.session_state.selected_batch_for_review = batch_key
+
                 st.session_state.batches[batch_key] = {
                     "uploaded_files_data": [dict(f, bytes=tuple(f['bytes'])) for f in files_to_process],
                     "brand": st.session_state.brand_selection,
