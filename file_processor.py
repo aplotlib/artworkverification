@@ -17,23 +17,28 @@ from ai_analyzer import AIReviewer, check_api_keys
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 @st.cache_data
-def process_files_cached(files: Tuple[Dict[str, Any], ...]) -> Tuple[List[Dict[str, Any]], List[str]]:
+def process_files_cached(files: Tuple[Dict[str, Any], ...], analysis_mode: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     """A cached wrapper around the main file processing logic."""
-    processor = DocumentProcessor(list(files))
+    processor = DocumentProcessor(list(files), analysis_mode)
     return processor.process_files()
 
 class DocumentProcessor:
     """Handles all file reading, text extraction, and brand compliance analysis."""
 
-    def __init__(self, files: List[Dict[str, Any]]):
+    def __init__(self, files: List[Dict[str, Any]], analysis_mode: str):
         self.files = files
+        self.analysis_mode = analysis_mode
         self._setup_brand_colors()
-        # Initialize AIReviewer once for OCR corrections
-        api_keys = check_api_keys()
-        self.ai_reviewer = AIReviewer(api_keys) if api_keys.get('openai') else None
-
+        
+        # Initialize AIReviewer only if it's needed for OCR correction
+        if self.analysis_mode in ["OCR + AI Analysis", "OCR Correction Only"]:
+            api_keys = check_api_keys()
+            self.ai_reviewer = AIReviewer(api_keys) if api_keys.get('openai') else None
+        else:
+            self.ai_reviewer = None
 
     def _setup_brand_colors(self):
+        # ... (this method remains the same)
         """Pre-calculates LabColor objects for brand colors for efficient comparison."""
         self.brand_colors_lab = []
         brand_color_data = AppConfig.BRAND_GUIDE['colors']['brand_color']
@@ -46,6 +51,7 @@ class DocumentProcessor:
             self.brand_colors_lab.append({"name": color['name'], "lab": convert_color(srgb, LabColor)})
 
     def _get_closest_brand_color(self, rgb_tuple: Tuple[int, int, int]) -> Tuple[str, float]:
+        # ... (this method remains the same)
         """Finds the closest brand color to a given RGB value using Delta E."""
         if not rgb_tuple or len(rgb_tuple) < 3: return "N/A", float('inf')
         color_to_check_srgb = sRGBColor(rgb_r=rgb_tuple[0], rgb_g=rgb_tuple[1], rgb_b=rgb_tuple[2], is_upscaled=True)
@@ -58,6 +64,7 @@ class DocumentProcessor:
         return closest_color_name, min_delta_e
 
     def _classify_document(self, filename: str) -> Tuple[str, str]:
+        # ... (this method remains the same)
         """Classifies a document and determines if it's shared or unique."""
         fn_lower = filename.lower()
         doc_type = "uncategorized"
@@ -69,6 +76,7 @@ class DocumentProcessor:
         return doc_type, file_nature
 
     def _analyze_pdf_brand_compliance(self, file_bytes: tuple) -> Dict[str, Any]:
+        # ... (this method remains the same)
         """Extracts fonts and colors from a PDF for brand compliance checking."""
         fonts, colors = set(), defaultdict(int)
         try:
@@ -99,14 +107,15 @@ class DocumentProcessor:
         try:
             doc = fitz.open(stream=BytesIO(bytes(file_bytes)), filetype="pdf")
             for page_num, page in enumerate(doc):
-                # First, try direct text extraction
                 page_text = page.get_text()
                 
-                # If direct extraction yields little text, fall back to OCR
-                if len(page_text.strip()) < 50: # Heuristic threshold
+                # Fall back to OCR if direct extraction is poor
+                if len(page_text.strip()) < 50:
                     pix = page.get_pixmap(dpi=300)
                     img = Image.open(BytesIO(pix.tobytes("png")))
                     ocr_text = pytesseract.image_to_string(img)
+                    
+                    # Conditionally run AI OCR correction
                     if self.ai_reviewer:
                         page_text = self.ai_reviewer.run_ai_ocr_correction(ocr_text)
                     else:
@@ -124,6 +133,7 @@ class DocumentProcessor:
             return {'success': False, 'error': f"PDF processing failed: {e}"}
 
     def process_files(self) -> Tuple[List[Dict[str, Any]], List[str]]:
+        # ... (this method remains the same)
         """Processes all files, including brand compliance checks."""
         processed_docs = []
         all_skus = set()
