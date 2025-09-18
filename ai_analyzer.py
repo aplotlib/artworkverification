@@ -111,6 +111,36 @@ RAW OCR TEXT:
         if result["success"] and isinstance(result["data"], dict) and "results" in result["data"]:
              return {"success": True, "data": result["data"]["results"]}
         return result
+    
+    def run_ai_consistency_audit(self, docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Uses a powerful AI to find logical conflicts between multiple documents."""
+        
+        # Create a single text bundle with clear separators
+        text_bundle = ""
+        for doc in docs:
+            filename = doc.get('filename', 'Unknown Document')
+            doc_type = doc.get('doc_type', 'uncategorized')
+            text = doc.get('text', '')
+            text_bundle += f"--- START {doc_type}: {filename} ---\n{text}\n\n"
+
+        prompt = f"""You are a Senior QA Inspector specializing in medical device packaging. Your task is to analyze the following bundle of text extracted from multiple artwork files for the same product. Identify any logical inconsistencies or conflicts between the documents.
+
+Pay close attention to conflicts in:
+- **Product Name:** Are there different variations of the product name?
+- **SKU or Item Code:** Do all documents list the exact same SKU?
+- **Country of Origin:** Is the 'Made In' country consistent everywhere?
+- **Care Instructions:** Do the washtag instructions conflict with the manual?
+- **Contact Information:** Is the company address, phone number, or website the same in all documents?
+- **Technical Specifications:** Are there conflicting dimensions, materials, or quantities mentioned?
+
+Analyze the text bundle below and respond with ONLY a JSON object. The object should contain a list named 'inconsistencies'. Each item in the list must have three keys: 'confidence' (high, medium, or low), 'description' (a clear explanation of the conflict), and 'sources' (a list of the filenames involved). If there are no inconsistencies, return an empty list.
+
+TEXT BUNDLE:
+{text_bundle}
+"""
+        model = AppConfig.AI_MODELS[self.provider]['advanced'] # Use the most powerful model
+        return self._safe_ai_call(prompt, model, is_json=True)
+
 
     def run_ai_quality_check(self, text: str) -> Dict[str, Any]:
         """Uses AI to check for spelling and grammar issues."""
