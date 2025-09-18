@@ -4,7 +4,7 @@ class AppConfig:
     """Holds the configuration constants for the application."""
     APP_TITLE = "Vive Health Artwork Verification Co-pilot"
     PAGE_ICON = "🎨"
-    MAX_FILE_SIZE_MB = 350
+    MAX_FILE_SIZE_MB = 200
     SERVER_MAX_UPLOAD_SIZE = MAX_FILE_SIZE_MB
     SHARED_FILE_KEYWORDS = ['manual', 'qsg', 'quickstart', 'washtag', 'logo', 'thank you', 'ty_card']
     DOC_TYPE_MAP = {
@@ -164,5 +164,3 @@ class AppConfig:
             ]
         }
     }
-
-}
