@@ -70,7 +70,8 @@ class AIReviewer:
         """Uses AI to correct OCR errors."""
         prompt = f"""You are an OCR correction expert. Review the following text and fix scanning or recognition errors. Preserve original formatting and content. Return only the corrected text.
         RAW OCR TEXT: --- {text} ---"""
-        result = self._safe_ai_call(prompt, "gpt-4o-mini" if self.provider == "openai" else "claude-3-sonnet-20240229")
+        model = AppConfig.AI_MODELS[self.provider]['standard']
+        result = self._safe_ai_call(prompt, model)
         return result["data"] if result["success"] else text
 
     def run_ai_fact_extraction(self, text: str) -> Dict[str, Any]:
@@ -78,7 +79,8 @@ class AIReviewer:
         prompt = f"""You are an expert data extraction agent. Extract key information from the following text into a JSON object: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', 'Dimensions', 'MaterialComposition'. Use null if a field is not present.
         TEXT TO ANALYZE: --- {text} ---
         Respond with ONLY the JSON object."""
-        result = self._safe_ai_call(prompt, "gpt-4o-mini" if self.provider == "openai" else "claude-3-sonnet-20240229", is_json=True)
+        model = AppConfig.AI_MODELS[self.provider]['standard']
+        result = self._safe_ai_call(prompt, model, is_json=True)
         return result
 
     def run_ai_compliance_check(self, facts: Dict[str, Any], must_contain: str, must_not_contain: str) -> Dict[str, Any]:
@@ -91,10 +93,10 @@ class AIReviewer:
         MUST CONTAIN PHRASES: --- {must_contain} ---
         MUST NOT CONTAIN PHRASES: --- {must_not_contain} ---
         Respond with ONLY a JSON object containing a list called 'results'. Each item needs 'phrase', 'status' ('Pass' or 'Fail'), and 'reasoning' keys."""
-        result = self._safe_ai_call(prompt, "gpt-4o-mini" if self.provider == "openai" else "claude-3-sonnet-20240229", is_json=True)
-        if result["success"] and isinstance(result["data"], dict):
-            for key, value in result["data"].items():
-                if isinstance(value, list): return {"success": True, "data": value}
+        model = AppConfig.AI_MODELS[self.provider]['standard']
+        result = self._safe_ai_call(prompt, model, is_json=True)
+        if result["success"] and isinstance(result["data"], dict) and "results" in result["data"]:
+             return {"success": True, "data": result["data"]["results"]}
         return result
 
     def run_ai_quality_check(self, text: str) -> Dict[str, Any]:
@@ -102,7 +104,8 @@ class AIReviewer:
         prompt = f"""You are a proofreading expert. Analyze the following text for clear spelling and grammar errors.
         TEXT TO ANALYZE: --- {text} ---
         Respond with ONLY a JSON object with a list called 'issues'. Each issue needs 'error', 'correction', and 'context' keys. If no issues, the list should be empty."""
-        return self._safe_ai_call(prompt, "gpt-4o-mini" if self.provider == "openai" else "claude-3-sonnet-20240229", is_json=True)
+        model = AppConfig.AI_MODELS[self.provider]['standard']
+        return self._safe_ai_call(prompt, model, is_json=True)
 
     def generate_executive_summary(self, docs: List[Dict[str, Any]], rule_results: List, compliance_results: List, quality_results: Dict[str, Any], custom_instructions: str) -> str:
         """Generates a final summary synthesizing all analysis stages."""
@@ -119,7 +122,8 @@ class AIReviewer:
         1.  **Address Instructions First:** Start with a direct answer to the user's special instructions.
         2.  **Write Executive Summary:** Following that, provide a holistic summary of all findings. Use clear headings and bullet points.
         """
-        result = self._safe_ai_call(prompt, "gpt-4o" if self.provider == "openai" else "claude-3-opus-20240229")
+        model = AppConfig.AI_MODELS[self.provider]['advanced']
+        result = self._safe_ai_call(prompt, model)
         return result["data"] if result["success"] else f"**Error generating summary:** {result['error']}"
 
     def run_chatbot_interaction(self, history: List[Dict[str, str]], analysis_context: Dict[str, Any] = None) -> str:
@@ -134,10 +138,10 @@ class AIReviewer:
         
         try:
             if self.provider == "openai":
-                response = self.openai_client.chat.completions.create(model="gpt-4o-mini", messages=messages, temperature=0.3)
+                response = self.openai_client.chat.completions.create(model=AppConfig.AI_MODELS[self.provider]['chat'], messages=messages, temperature=0.3)
                 return response.choices[0].message.content
             else:
-                response = self.anthropic_client.messages.create(model="claude-3-sonnet-20240229", max_tokens=1024, messages=history)
+                response = self.anthropic_client.messages.create(model=AppConfig.AI_MODELS[self.provider]['chat'], max_tokens=1024, messages=history)
                 return response.content[0].text
         except Exception as e:
             return f"An error occurred with the AI: {e}"
