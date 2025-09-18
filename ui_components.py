@@ -20,6 +20,10 @@ def display_header():
     st.markdown("""
         <style>
             .header-title { font-size: 2.5rem; font-weight: 700; color: #2A9D8F; padding-bottom: 0rem; }
+            .st-emotion-cache-183lzff {
+                color: #FFFFFF;
+                background-color: #D33682;
+            }
         </style>
     """, unsafe_allow_html=True)
     st.markdown('<h1 class="header-title">Vive Health Artwork Verification Co-pilot</h1>', unsafe_allow_html=True)
@@ -32,8 +36,9 @@ def display_instructions():
         - Use the buttons in the sidebar to choose **Vive** or **Coretech**. This loads the correct checklist.
         - Select your preferred AI provider (OpenAI or Anthropic).
 
-        **2. ✍️ Provide Primary Validation Source**
+        **2. ✍️ Provide Primary Validation Source (Recommended)**
         - You can either upload a file named **Primary_Validation_SKU.pdf** OR provide the validation text in the sidebar. The file will take precedence.
+        - Providing a primary validation source is highly recommended to ensure the highest accuracy.
 
         **3. 📁 Upload Files & Run Verification**
         - Drag and drop all artwork files for one product into the uploader.
@@ -68,7 +73,9 @@ def display_sidebar(api_keys: Dict[str, str]):
         st.divider()
         st.header("📋 Verification Setup")
         
-        st.text_area("Primary Validation Text", key='primary_validation_text', height=150, help="Enter the source text for validation (UPC, SKU, etc.). This will be ignored if a 'Primary_Validation_SKU.pdf' file is uploaded.")
+        st.file_uploader("Upload Primary Validation File (Optional)", key='primary_validation_file', help="Upload the primary validation file. This will be used as the source of truth for the verification.")
+        
+        st.text_area("Primary Validation Text (Optional)", key='primary_validation_text', height=150, help="Enter the source text for validation (UPC, SKU, etc.). This will be ignored if a primary validation file is uploaded.")
         
         col1, col2 = st.columns(2)
         if col1.button("Vive Product", use_container_width=True):
@@ -169,8 +176,8 @@ def generate_report_text(batch_data: Dict) -> str:
     report += batch_data.get('ai_summary', "No summary available.") + "\n\n"
     
     report += "Rule-Based Checks\n" + "-"*20 + "\n"
-    for status, msg, _ in batch_data.get('global_results', []):
-        report += f"[{'PASS' if status == 'passed' else 'FAIL'}] {msg}\n"
+    for result in batch_data.get('global_results', []):
+        report += f"[{result.get('status', 'N/A').upper()}] {result.get('message', '')}\n"
     report += "\n"
 
     report += "AI Compliance Check\n" + "-"*20 + "\n"
@@ -218,7 +225,7 @@ def display_results_page(batch_data: Dict):
 
     with st.container(border=True):
         st.subheader("📈 Report Dashboard")
-        rule_failures = len([r for r in global_results if r[0] == 'failed'])
+        rule_failures = len([r for r in global_results if r.get('status') == 'failed'])
         compliance_failures = sum(1 for res in compliance_results if res.get('status') == 'Fail')
         total_issues = rule_failures + compliance_failures + quality_issues
 
@@ -238,7 +245,77 @@ def display_results_page(batch_data: Dict):
         tabs = st.tabs(tab_titles)
 
         with tabs[0]:
-            pass
+            display_automated_checks(global_results)
+
+        with tabs[1]:
+            display_brand_compliance(processed_docs)
+
+        for i, doc_type in enumerate(sorted(list(set(d['doc_type'].replace('_', ' ').title() for d in processed_docs)))):
+            with tabs[i+2]:
+                docs_to_display = [d for d in processed_docs if d['doc_type'].replace('_', ' ').title() == doc_type]
+                display_document_details(docs_to_display)
+
+
+def display_automated_checks(global_results: List[Dict]):
+    """Displays the results of the automated checks with color-coding."""
+    st.subheader("Automated Checks")
+    for result in global_results:
+        status = result.get('status', 'info')
+        message = result.get('message', '')
+        details = result.get('details', '')
+        
+        if status == 'passed':
+            st.success(message)
+        elif status == 'failed':
+            st.error(message)
+        elif status == 'warning':
+            st.warning(message)
+        elif status == 'orange':
+            st.warning(f"🟠 {message}")
+        else:
+            st.info(message)
+            
+        if details:
+            st.markdown(f"> {details}")
+
+def display_brand_compliance(processed_docs: List[Dict]):
+    """Displays the brand compliance results."""
+    st.subheader("Brand Compliance")
+    for doc in processed_docs:
+        if 'brand_compliance' in doc and doc['brand_compliance'].get('success'):
+            with st.expander(f"**{doc['filename']}**"):
+                st.write("#### Fonts")
+                st.write(", ".join(doc['brand_compliance']['fonts']))
+                
+                st.write("#### Colors")
+                for color in doc['brand_compliance']['colors']:
+                    rgb = color['rgb']
+                    closest_brand_color = color['closest_brand_color']
+                    delta_e = color['delta_e']
+                    compliant = color['compliant']
+                    
+                    color_block = f'<div style="width: 20px; height: 20px; background-color: rgb({rgb[0]}, {rgb[1]}, {rgb[2]}); display: inline-block; margin-right: 10px;"></div>'
+                    
+                    if compliant:
+                        st.markdown(f"{color_block} **rgb({rgb[0]}, {rgb[1]}, {rgb[2]})** is compliant. Closest brand color: **{closest_brand_color}** (Delta E: {delta_e:.2f})", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"{color_block} **rgb({rgb[0]}, {rgb[1]}, {rgb[2]})** is not compliant. Closest brand color: **{closest_brand_color}** (Delta E: {delta_e:.2f})", unsafe_allow_html=True)
+
+
+def display_document_details(docs: List[Dict]):
+    """Displays the details of each processed document."""
+    for doc in docs:
+        with st.expander(f"**{doc['filename']}**"):
+            st.write(f"**Document Type:** {doc['doc_type']}")
+            st.write(f"**File Nature:** {doc['file_nature']}")
+            
+            if doc['qr_codes']:
+                st.write("**QR Codes:**")
+                for qr in doc['qr_codes']:
+                    st.code(qr)
+                    
+            st.write("**Extracted Text:**")
+            st.text(doc['text'])
 
 def display_chat_interface(batch_data: Dict[str, Any]):
     # ... (chat logic is the same)
