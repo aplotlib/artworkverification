@@ -5,9 +5,8 @@ from collections import defaultdict
 class ArtworkValidator:
     """Performs core, rule-based validation checks on the combined text."""
 
-    def __init__(self, all_text: str, reference_text: str = None):
+    def __init__(self, all_text: str):
         self.all_text = all_text
-        self.reference_text = reference_text
 
     def validate(self, docs: List[Dict[str, any]]) -> Tuple[List, Dict]:
         """Runs all validation checks and returns global and per-document results."""
@@ -26,7 +25,6 @@ class ArtworkValidator:
 
             upcs = set(re.findall(r'\b\d{12}\b', packaging_text))
             udis = set(re.findall(r'\(01\)\d{14}', packaging_text))
-            # UPGRADE: Regex now supports both LVA and CSH SKU formats.
             skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', packaging_text, re.IGNORECASE))
 
             if not upcs:
@@ -58,15 +56,5 @@ class ArtworkValidator:
             for other_sku in other_skus:
                 if skus and other_sku not in skus:
                     global_results.append(('failed', f"SKU `{other_sku}` from an auxiliary file does not match any packaging SKU.", "consistency_fail"))
-
-        # --- Per-Document Check based on the pasted checklist ---
-        if self.reference_text:
-            # UPGRADE: Checklist parser now ignores comments (lines starting with #).
-            required_phrases = [phrase.strip() for phrase in self.reference_text.split('\n') if phrase.strip() and not phrase.strip().startswith('#')]
-            for doc in docs:
-                doc_text_lower = doc['text'].lower()
-                for phrase in required_phrases:
-                    if phrase.lower() not in doc_text_lower:
-                        per_doc_results[doc['filename']].append(('failed', f"Missing required text: '{phrase}'"))
-
+        
         return global_results, per_doc_results
