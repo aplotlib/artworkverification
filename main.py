@@ -12,7 +12,7 @@ from ui_components import (
 )
 
 @st.cache_data(show_spinner=False)
-def run_analysis_cached(_file_tuples, must_contain_text, must_not_contain_text, custom_instructions, analysis_mode, primary_validation_text):
+def run_analysis_cached(files, must_contain_text, must_not_contain_text, custom_instructions, analysis_mode, primary_validation_text):
     """
     Performs all validation and AI analysis. Caching this function prevents
     re-running AI calls for the same data.
@@ -21,7 +21,7 @@ def run_analysis_cached(_file_tuples, must_contain_text, must_not_contain_text, 
     
     # --- Step 1: File Processing (with conditional OCR) ---
     with st.spinner("Step 1/2: Processing and extracting text from files..."):
-        processed_docs, skus = process_files_cached(_file_tuples, analysis_mode)
+        processed_docs, skus = process_files_cached(files, analysis_mode)
         results.update({
             "skus": skus,
             "processed_docs": processed_docs
@@ -41,8 +41,8 @@ def run_analysis_cached(_file_tuples, must_contain_text, must_not_contain_text, 
             
             packaging_doc_text = next((d['text'] for d in processed_docs if d['doc_type'] == 'packaging_artwork'), all_text)
             
-            validator = ArtworkValidator(all_text)
-            global_results, per_doc_results = validator.validate(processed_docs.copy(), primary_validation_text)
+            validator = ArtworkValidator()
+            global_results, per_doc_results = validator.validate(processed_docs.copy())
             
             ai_facts = reviewer.run_ai_fact_extraction(packaging_doc_text)
             compliance_results = reviewer.run_ai_compliance_check(ai_facts.get('data', {}), must_contain_text, must_not_contain_text)
@@ -99,20 +99,15 @@ def main():
                     st.session_state.get('must_contain', ''), 
                     st.session_state.get('must_not_contain', ''), 
                     st.session_state.get('custom_instructions', ''), 
-                    st.session_state.get('analysis_mode', 'OCR + AI Analysis'), # Pass the new mode
+                    st.session_state.get('analysis_mode', 'OCR + AI Analysis'),
                     st.session_state.get('primary_validation_text', '')
                 )
 
                 skus = analysis_results.get("skus", [])
                 batch_key = skus[0] if skus else f"Batch-{int(time.time())}"
                 
-                # Set the internal state, which will update the widget on rerun
                 st.session_state.current_batch_sku = batch_key
                 
-                # ---- ERROR FIX: REMOVED THE FOLLOWING LINE ----
-                # st.session_state.selected_batch_for_review = batch_key
-                # -----------------------------------------------
-
                 st.session_state.batches[batch_key] = {
                     "uploaded_files_data": [dict(f, bytes=tuple(f['bytes'])) for f in files_to_process],
                     "brand": st.session_state.brand_selection,
