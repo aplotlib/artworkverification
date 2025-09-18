@@ -35,32 +35,30 @@ class AppConfig:
             ]
         },
         "color_tolerance": 20.0,
-        # UPGRADE: Added a list of neutral colors to ignore during brand compliance checks.
         "COLOR_IGNORE_LIST": [
             (0, 0, 0),       # Black
             (255, 255, 255)  # White
         ]
     }
 
-    DEFAULT_CHECKLIST = """
-# Content & Compliance
-- Country of Origin ("Made in China") is present on packaging and product.
-- Warranty information (e.g., "1 year warranty") is correct.
-- Distributor contact information is present and correct.
-- SKU and UPC on packaging match the spec sheet.
-- UDI is present on the packaging and matches the UDI file.
-- Proposition 65 warning is included if required.
-
-# File Presence
-- Final packaging artwork file is included.
-- Quick Start Guide / Manual file is included.
-- Shipping Mark file is included.
-- UDI label file is included.
-- Wash tag / Care instructions file is included.
-
-# Brand & Formatting
-- Product dimensions on packaging match the spec sheet.
-- All fonts comply with the VIVE Brand Guide (Poppins, Montserrat, Arial).
-- All colors comply with the VIVE Brand Guide color palette.
-- Logos are used correctly according to the brand guide.
-"""
+    CHECKLISTS = {
+        "Vive": {
+            "Packaging": ["Product Name Consistency", "SKU ID", "UPC and UDI", "Image Visual", "Country Origin (Made in China)", "Made in China sticker"],
+            "Manual": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "Country Origin", "Check dims if it will fit in the box"],
+            "Inserts/Stickers": ["Thank you Card (Vive Products only)"],
+            "Quickstart, IFU": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "UDI", "Product QR Code", "Master Carton UDI and Shipping Mark", "Giftbox UDI on Packaging"],
+            "Washtag": ["Multivariant? (one washtag/size or color)", "Country Origin"],
+            "Shipping Mark": ["Confirm qty-ctn from R&D", "Confirm Origin (Made in ...)"],
+            "QC Sheet (Cross Check with R&D)": ["Packaging Dims", "Logo Print/tag placement/color", "Wash tag placement/color", "UDI Info", "Sticker placements", "Match barcode on artworks"]
+        },
+        "Coretech": {
+            "Packaging": ["Product Name Consistency", "SKU ID", "UPC and UDI", "Image Visual", "Country Origin (Made in China)"],
+            "Billing Sticker": ["SKU ID", "UPC and UDI", "HCPCS and Lot #", "Match Size to Barcode and UDI"],
+            "Manual": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "Country Origin", "Check dims if it will fit in the box"],
+            "Other Inserts/Sticker": ["Vive Now, Neoprene Insert, Air out insert, Fit info, etc.", "Warning label"],
+            "Quickstart, IFU": ["Product Name Consistency", "SKU ID", "Outlined Texts", "QR Code matches the shortlink", "UDI", "Product QR Code", "Master Carton UDI an Shipping Mark"],
+            "Washtag": ["Multivariant? (one washtag/size or color)", "Country Origin"],
+            "Shipping Mark": ["Confirm qty-ctn from R&D", "Confirm Origin (Made in ...)"],
+            "QC Sheet (Cross Check with R&D)": ["Packaging Dims", "Logo Print/tag placement/color", "Wash tag placement/color", "UDI Info", "Sticker placements", "Match barcode on artworks"]
+        }
+    }
