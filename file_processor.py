@@ -1,130 +1,159 @@
 import streamlit as st
-import time
-import os
+import fitz  # PyMuPDF
+import pandas as pd
+from PIL import Image, ImageFile
+from io import BytesIO
+from pyzbar.pyzbar import decode as qr_decode
+import pytesseract
+import re
+from typing import List, Dict, Any, Tuple
 from config import AppConfig
-from file_processor import process_files_cached
-from validator import ArtworkValidator
+from colormath.color_objects import sRGBColor, LabColor
+from colormath.color_diff import delta_e_cie2000
+from colormath.color_conversions import convert_color
+from collections import defaultdict
 from ai_analyzer import AIReviewer, check_api_keys
-from ui_components import (
-    display_header,
-    display_instructions,
-    display_sidebar,
-    display_file_uploader,
-    display_results_page,
-    display_pdf_previews,
-    display_dynamic_checklist,
-    display_chat_interface
-)
 
-@st.cache_data(show_spinner=False) # Spinner is handled manually
-def run_analysis_cached(_file_tuples, must_contain_text, must_not_contain_text, custom_instructions, ai_provider):
-    """
-    Performs all validation and AI analysis. Caching this function prevents
-    re-running AI calls for the same data.
-    """
-    with st.spinner("Step 1/2: Processing and extracting text from files..."):
-        processed_docs, skus = process_files_cached(_file_tuples)
-    
-    with st.spinner("Step 2/2: Running AI analysis... This may take a moment."):
-        all_text = "\n\n".join(doc['text'] for doc in processed_docs)
-        
-        validator = ArtworkValidator(all_text)
-        global_results, per_doc_results = validator.validate(processed_docs)
-        
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+@st.cache_data
+def process_files_cached(files: Tuple[Dict[str, Any], ...]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """A cached wrapper around the main file processing logic."""
+    processor = DocumentProcessor(list(files))
+    return processor.process_files()
+
+class DocumentProcessor:
+    """Handles all file reading, text extraction, and brand compliance analysis."""
+
+    def __init__(self, files: List[Dict[str, Any]]):
+        self.files = files
+        self._setup_brand_colors()
+        # Initialize AIReviewer once for OCR corrections
         api_keys = check_api_keys()
-        if not api_keys.get(ai_provider):
-            return {
-                "error": f"{ai_provider.capitalize()} API key not found.", "global_results": global_results,
-                "per_doc_results": per_doc_results, "skus": skus, "processed_docs": processed_docs
+        self.ai_reviewer = AIReviewer(api_keys) if api_keys.get('openai') else None
+
+
+    def _setup_brand_colors(self):
+        """Pre-calculates LabColor objects for brand colors for efficient comparison."""
+        self.brand_colors_lab = []
+        brand_color_data = AppConfig.BRAND_GUIDE['colors']['brand_color']
+        main_srgb = sRGBColor(rgb_r=brand_color_data['rgb'][0], rgb_g=brand_color_data['rgb'][1], rgb_b=brand_color_data['rgb'][2], is_upscaled=True)
+        self.brand_colors_lab.append({"name": brand_color_data['name'], "lab": convert_color(main_srgb, LabColor)})
+        
+        for color in AppConfig.BRAND_GUIDE['colors']['complementary_colors']:
+            rgb = color['rgb']
+            srgb = sRGBColor(rgb_r=rgb[0], rgb_g=rgb[1], rgb_b=rgb[2], is_upscaled=True)
+            self.brand_colors_lab.append({"name": color['name'], "lab": convert_color(srgb, LabColor)})
+
+    def _get_closest_brand_color(self, rgb_tuple: Tuple[int, int, int]) -> Tuple[str, float]:
+        """Finds the closest brand color to a given RGB value using Delta E."""
+        if not rgb_tuple or len(rgb_tuple) < 3: return "N/A", float('inf')
+        color_to_check_srgb = sRGBColor(rgb_r=rgb_tuple[0], rgb_g=rgb_tuple[1], rgb_b=rgb_tuple[2], is_upscaled=True)
+        color_to_check_lab = convert_color(color_to_check_srgb, LabColor)
+        
+        min_delta_e, closest_color_name = min(
+            ((delta_e_cie2000(color_to_check_lab, bc["lab"]), bc["name"]) for bc in self.brand_colors_lab),
+            key=lambda x: x[0]
+        )
+        return closest_color_name, min_delta_e
+
+    def _classify_document(self, filename: str) -> Tuple[str, str]:
+        """Classifies a document and determines if it's shared or unique."""
+        fn_lower = filename.lower()
+        doc_type = "uncategorized"
+        for dt, keywords in AppConfig.DOC_TYPE_MAP.items():
+            if any(keyword in fn_lower for keyword in keywords):
+                doc_type = dt
+                break
+        file_nature = "Shared File" if any(keyword in fn_lower for keyword in AppConfig.SHARED_FILE_KEYWORDS) else "Unique Artwork"
+        return doc_type, file_nature
+
+    def _analyze_pdf_brand_compliance(self, file_bytes: tuple) -> Dict[str, Any]:
+        """Extracts fonts and colors from a PDF for brand compliance checking."""
+        fonts, colors = set(), defaultdict(int)
+        try:
+            doc = fitz.open(stream=BytesIO(bytes(file_bytes)), filetype="pdf")
+            for page in doc:
+                fonts.update(font[3] for font in page.get_fonts())
+                for drawing in page.get_drawings():
+                    rgb = tuple(int(c * 255) for c in drawing.get("color", [])[:3])
+                    if rgb and rgb not in AppConfig.BRAND_GUIDE["COLOR_IGNORE_LIST"]:
+                        colors[rgb] += 1
+            doc.close()
+            
+            color_analysis = [
+                {
+                    "rgb": rgb,
+                    "closest_brand_color": (closest_name := self._get_closest_brand_color(rgb))[0],
+                    "delta_e": (delta_e := closest_name[1]),
+                    "compliant": delta_e <= AppConfig.BRAND_GUIDE["color_tolerance"]
+                } for rgb in colors
+            ]
+            return {"success": True, "fonts": list(fonts), "colors": color_analysis}
+        except Exception as e:
+            return {"success": False, "error": f"Brand compliance analysis failed: {e}"}
+
+    def _extract_from_pdf(self, file_bytes: tuple) -> Dict[str, Any]:
+        """Extracts text and QR codes from a PDF using a hybrid approach."""
+        text, qr_data = "", []
+        try:
+            doc = fitz.open(stream=BytesIO(bytes(file_bytes)), filetype="pdf")
+            for page_num, page in enumerate(doc):
+                # First, try direct text extraction
+                page_text = page.get_text()
+                
+                # If direct extraction yields little text, fall back to OCR
+                if len(page_text.strip()) < 50: # Heuristic threshold
+                    pix = page.get_pixmap(dpi=300)
+                    img = Image.open(BytesIO(pix.tobytes("png")))
+                    ocr_text = pytesseract.image_to_string(img)
+                    if self.ai_reviewer:
+                        page_text = self.ai_reviewer.run_ai_ocr_correction(ocr_text)
+                    else:
+                        page_text = ocr_text
+                
+                text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                
+                # QR Code decoding
+                pix = page.get_pixmap(dpi=300)
+                img = Image.open(BytesIO(pix.tobytes("png")))
+                qr_data.extend(obj.data.decode('utf-8') for obj in qr_decode(img))
+            doc.close()
+            return {'success': True, 'text': text, 'qr_data': qr_data}
+        except Exception as e:
+            return {'success': False, 'error': f"PDF processing failed: {e}"}
+
+    def process_files(self) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """Processes all files, including brand compliance checks."""
+        processed_docs = []
+        all_skus = set()
+
+        for file in self.files:
+            file_name, file_bytes = file['name'], file['bytes']
+            doc_type, file_nature = self._classify_document(file_name)
+            doc_data = {
+                'filename': file_name, 'text': "", 'doc_type': doc_type, 'file_nature': file_nature,
+                'qr_codes': [], 'dimensions': [], 'brand_compliance': {}
             }
 
-        reviewer = AIReviewer(api_keys, provider=ai_provider)
-        # AI OCR Correction is now part of the cached file processing
-        
-        packaging_doc_text = next((d['text'] for d in processed_docs if d['doc_type'] == 'packaging_artwork'), all_text)
-        
-        ai_facts = reviewer.run_ai_fact_extraction(packaging_doc_text)
-        compliance_results = reviewer.run_ai_compliance_check(ai_facts.get('data', {}), must_contain_text, must_not_contain_text)
-        quality_results = reviewer.run_ai_quality_check(all_text)
-        ai_summary = reviewer.generate_executive_summary(processed_docs, global_results, compliance_results.get('data', []), quality_results, custom_instructions)
-    
-    return {
-        "global_results": global_results, "per_doc_results": per_doc_results, "skus": skus,
-        "ai_summary": ai_summary, "ai_facts": ai_facts, "compliance_results": compliance_results,
-        "quality_results": quality_results, "processed_docs": processed_docs
-    }
-
-def main():
-    st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
-    
-    # Initialize session state for robust multi-batch management
-    if 'batches' not in st.session_state: st.session_state.batches = {}
-    if 'current_batch_sku' not in st.session_state: st.session_state.current_batch_sku = None
-    if 'messages' not in st.session_state: st.session_state.messages = []
-    if 'brand_selection' not in st.session_state: st.session_state.brand_selection = "Vive"
-
-    api_keys = check_api_keys()
-    run_validation, brand_selection, must_contain_text, must_not_contain_text, ai_provider, run_test_validation = display_sidebar(api_keys)
-    
-    display_header()
-    
-    # --- Main Logic for Processing and Analysis ---
-    if run_validation or run_test_validation:
-        files_to_process = []
-        if run_test_validation:
-            test_data_dir = 'test_data'
-            if not os.path.exists(test_data_dir):
-                st.error(f"Test data directory not found. Please create a '{test_data_dir}' folder and add test files.")
-            else:
-                test_files = os.listdir(test_data_dir)
-                for file_name in test_files:
-                    file_path = os.path.join(test_data_dir, file_name)
-                    try:
-                        with open(file_path, "rb") as f: files_to_process.append({"name": file_name, "bytes": f.read()})
-                    except Exception as e:
-                        st.error(f"Could not read test file {file_path}: {e}")
-        else:
-            uploaded_files = st.session_state.get('uploaded_files', [])
-            if not uploaded_files:
-                st.toast("📂 Please upload artwork files first!", icon="⚠️")
-            else:
-                files_to_process = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
-
-        if files_to_process:
-            file_tuples = tuple(sorted(({"name": f["name"], "bytes": tuple(f["bytes"])} for f in files_to_process), key=lambda x: x['name']))
+            if file_name.lower().endswith('.pdf'):
+                pdf_result = self._extract_from_pdf(file_bytes)
+                if pdf_result['success']:
+                    doc_data.update({'text': pdf_result['text'], 'qr_codes': pdf_result['qr_data']})
+                else:
+                    st.warning(f"Processing failed for '{file_name}': {pdf_result['error']}")
+                doc_data['brand_compliance'] = self._analyze_pdf_brand_compliance(file_bytes)
             
-            analysis_results = run_analysis_cached(file_tuples, must_contain_text, must_not_contain_text, "", ai_provider)
-
-            batch_key = analysis_results.get("skus", [])[0] if analysis_results.get("skus") else f"Batch-{int(time.time())}"
-            st.session_state.current_batch_sku = batch_key
+            elif file_name.lower().endswith(('.csv', '.xlsx')):
+                try:
+                    df = pd.read_excel(BytesIO(bytes(file_bytes)), header=None) if file_name.lower().endswith('.xlsx') else pd.read_csv(BytesIO(bytes(file_bytes)), header=None)
+                    doc_data['text'] = df.to_string(index=False)
+                except Exception as e:
+                    st.warning(f"Could not read spreadsheet '{file_name}': {e}")
             
-            st.session_state.batches[batch_key] = {
-                "uploaded_files_data": [dict(f, bytes=tuple(f['bytes'])) for f in files_to_process],
-                "brand": brand_selection,
-                **analysis_results
-            }
-            st.session_state.messages = []
-            st.rerun()
+            skus_found = re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', doc_data['text'], re.IGNORECASE)
+            all_skus.update(sku.upper() for sku in skus_found)
 
-    # --- Display Area ---
-    main_display_area = st.container()
-    
-    with main_display_area:
-        current_batch_sku = st.session_state.get('current_batch_sku')
-        current_batch_data = st.session_state.batches.get(current_batch_sku)
+            processed_docs.append(doc_data)
 
-        if current_batch_data:
-            display_results_page(current_batch_data)
-            col1, col2 = st.columns(2)
-            with col1:
-                display_dynamic_checklist(current_batch_data.get('brand', 'Vive'), current_batch_sku)
-            with col2:
-                display_pdf_previews(current_batch_data.get('uploaded_files_data', []))
-            display_chat_interface(current_batch_data)
-        else:
-            display_instructions()
-            st.session_state['uploaded_files'] = display_file_uploader()
-            display_dynamic_checklist(st.session_state.brand_selection, "standalone_checklist")
-            
-if __name__ == "__main__":
-    main()
+        return processed_docs, sorted(list(filter(None, all_skus)))
