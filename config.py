@@ -20,6 +20,19 @@ class AppConfig:
     AI_BATCH_MAX_CHARS = 10000
     AI_API_TIMEOUT = 45
 
+    AI_MODELS = {
+        "openai": {
+            "standard": "gpt-4o-mini",
+            "advanced": "gpt-4o",
+            "chat": "gpt-4o-mini"
+        },
+        "anthropic": {
+            "standard": "claude-3-sonnet-20240229",
+            "advanced": "claude-3-opus-20240229",
+            "chat": "claude-3-sonnet-20240229"
+        }
+    }
+
     BRAND_GUIDE = {
         "fonts": {
             "main": ["Poppins"],
