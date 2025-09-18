@@ -44,7 +44,7 @@ def display_sidebar(api_keys: Dict[str, str]):
 
         if 'batches' in st.session_state and st.session_state.batches:
             batch_options = list(st.session_state.batches.keys())
-            st.selectbox("🗂️ Review Previous Batch:", options=batch_options, key='current_batch_sku', on_change=lambda: st.session_state.update(messages=[]))
+            st.selectbox("𗂬️ Review Previous Batch:", options=batch_options, key='current_batch_sku', on_change=lambda: st.session_state.update(messages=[]))
         
         st.divider()
         st.header("📋 Verification Setup")
@@ -205,78 +205,4 @@ def display_results_page(batch_data: Dict):
                 for doc in docs_by_type[title]:
                     with st.expander(f"**{doc['filename']}**"):
                         text_preview = doc['text']
-                        if len(text_preview) > 2000: text_preview = text_preview[:2000] + "\n\n... (text truncated)"
-                        st.text_area("Extracted Text Preview", text_preview, height=250, key=f"text_{doc['filename']}", label_visibility="collapsed")
-
-def display_brand_compliance_tab(processed_docs: List[Dict[str, Any]]):
-    """Displays the new tab for brand color and font compliance."""
-    st.subheader("🎨 Brand Compliance Analysis")
-    for doc in processed_docs:
-        if not doc.get('brand_compliance', {}).get('success'):
-            continue
-        
-        with st.expander(f"**{doc['filename']}**"):
-            st.markdown("#### Font Usage")
-            fonts_found = doc['brand_compliance'].get('fonts', [])
-            if not fonts_found:
-                st.markdown("No font data extracted from this file.")
-            else:
-                approved_fonts = AppConfig.BRAND_GUIDE['fonts']['main'] + AppConfig.BRAND_GUIDE['fonts']['secondary']
-                for font in fonts_found:
-                    is_compliant = any(approved.lower() in font.lower() for approved in approved_fonts)
-                    icon = "✅" if is_compliant else "❌"
-                    st.markdown(f"{icon} {font}")
-            
-            st.markdown("#### Color Palette Analysis")
-            colors_found = doc['brand_compliance'].get('colors', [])
-            if not colors_found:
-                st.markdown("No color data extracted from vector graphics in this file.")
-            else:
-                for color_data in colors_found:
-                    rgb = color_data['rgb']
-                    color_hex = '#%02x%02x%02x' % rgb
-                    icon = "✅" if color_data['compliant'] else "❌"
-                    
-                    st.markdown(f"""
-                    <div style="display: flex; align-items: center; margin-bottom: 5px;">
-                        <div style="width: 20px; height: 20px; background-color: {color_hex}; border: 1px solid #ccc; margin-right: 10px;"></div>
-                        <div>
-                            {icon} <b>{color_hex.upper()}</b> | Closest Match: <b>{color_data['closest_brand_color']}</b> 
-                            (ΔE: {color_data['delta_e']:.2f})
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-def display_pdf_previews(files: List[Dict[str, Any]]):
-    """Renders PDFs using st.pdf."""
-    pdf_files = [f for f in files if f['name'].lower().endswith('.pdf')]
-    if pdf_files:
-        st.header("📄 PDF Previews")
-        for pdf_file in pdf_files:
-            with st.expander(f"View Preview: {pdf_file['name']}"):
-                try:
-                    st.pdf(bytes(pdf_file['bytes']))
-                except Exception as e:
-                    st.error(f"Could not render preview for {pdf_file['name']}. Error: {e}")
-
-def display_chat_interface(batch_data: Dict = None):
-    """Displays the AI chat interface."""
-    if "messages" not in st.session_state: st.session_state.messages = []
-    
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            
-    if prompt := st.chat_input("Ask about the verification report..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
-            
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                api_keys = check_api_keys()
-                reviewer = AIReviewer(api_keys)
-                context = {"Executive Summary": batch_data.get('ai_summary')} if batch_data else {}
-                response = reviewer.run_chatbot_interaction(st.session_state.messages, context)
-                st.markdown(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.rerun()
+                        if
