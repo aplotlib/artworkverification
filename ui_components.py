@@ -85,7 +85,6 @@ def display_main_interface():
         current_batch_data = st.session_state.get('batches', {}).get(st.session_state.get('current_batch_sku'))
         if current_batch_data:
             display_results_page(current_batch_data)
-            display_pdf_previews(current_batch_data.get('uploaded_files_data', []))
         else:
             st.info("Run a verification to see the AI report here.")
 
@@ -194,7 +193,7 @@ def display_results_page(batch_data: Dict):
                 st.markdown(f"{'✅' if status == 'passed' else '❌'} {msg}")
         
         with tabs[1]:
-            display_brand_compliance_tab(processed_docs)
+            st.write("Brand compliance tab not yet implemented.")
 
         docs_by_type = defaultdict(list)
         for doc in processed_docs:
@@ -211,3 +210,44 @@ def display_results_page(batch_data: Dict):
                                 st.text(text_preview)
                         else:
                             st.text(text_preview)
+
+
+def display_chat_interface(batch_data: Dict[str, Any]):
+    """Renders the chat interface for interacting with the AI about the current batch."""
+    st.subheader("💬 Chat with AI Co-pilot")
+
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Ask about the analysis..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            full_response = ""
+            
+            api_keys = check_api_keys()
+            provider = st.session_state.get('ai_provider', 'openai')
+            
+            if not api_keys.get(provider):
+                full_response = f"Error: {provider.capitalize()} API key not configured."
+            else:
+                reviewer = AIReviewer(api_keys, provider=provider)
+                analysis_context = {
+                    "summary": batch_data.get('ai_summary'),
+                    "files": [doc['filename'] for doc in batch_data.get('processed_docs', [])]
+                } if batch_data else {}
+
+                full_response = reviewer.run_chatbot_interaction(
+                    st.session_state.messages,
+                    analysis_context
+                )
+
+            message_placeholder.markdown(full_response)
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
