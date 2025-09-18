@@ -10,6 +10,11 @@ from ai_analyzer import AIReviewer, check_api_keys
 from config import AppConfig
 from datetime import datetime
 
+def on_batch_selection_change():
+    """Callback to update the current batch SKU when a user selects from the dropdown."""
+    st.session_state.current_batch_sku = st.session_state.get('selected_batch_for_review')
+    st.session_state.messages = [] # Reset chat messages on batch switch
+
 def display_header():
     """Displays the branded application header."""
     st.markdown("""
@@ -45,7 +50,20 @@ def display_sidebar(api_keys: Dict[str, str]):
 
         if 'batches' in st.session_state and st.session_state.batches:
             batch_options = list(st.session_state.batches.keys())
-            st.selectbox("𗂬️ Review Previous Batch:", options=batch_options, key='current_batch_sku', on_change=lambda: st.session_state.update(messages=[]))
+            
+            # Find the index of the current batch to set as the default for the selectbox
+            try:
+                current_index = batch_options.index(st.session_state.get('current_batch_sku'))
+            except (ValueError, TypeError):
+                current_index = 0 # Default to the first item if not found
+
+            st.selectbox(
+                "𗂬️ Review Previous Batch:",
+                options=batch_options,
+                key='selected_batch_for_review', # Use the new, dedicated key
+                index=current_index,
+                on_change=on_batch_selection_change # Use the callback to sync state
+            )
         
         st.divider()
         st.header("📋 Verification Setup")
@@ -63,7 +81,10 @@ def display_sidebar(api_keys: Dict[str, str]):
 
         st.selectbox("Select AI Provider:", options=["openai", "anthropic"], help="Choose which AI service to use for analysis.", key='ai_provider')
         
-    st.session_state.run_validation = st.sidebar.button("🔍 Run Verification", use_container_width=True)
+    # The button that triggers the run is now the only thing that sets 'run_validation'
+    if st.sidebar.button("🔍 Run Verification", use_container_width=True):
+        st.session_state.run_validation = True
+        st.rerun()
 
 
 def display_main_interface():
@@ -217,8 +238,6 @@ def display_results_page(batch_data: Dict):
         tabs = st.tabs(tab_titles)
 
         with tabs[0]:
-            # This is the line that was causing the error.
-            # I've added a pass statement to fix it.
             pass
 
 def display_chat_interface(batch_data: Dict[str, Any]):
