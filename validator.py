@@ -1,84 +1,136 @@
 import re
-from typing import List, Tuple, Dict
+import pandas as pd
+from typing import List, Tuple, Dict, Any
 from collections import defaultdict
+from io import StringIO
 
 class ArtworkValidator:
-    """Performs rule-based validation checks based on a primary source."""
+    """Performs rule-based validation by creating a 'golden record' from a primary QC sheet."""
 
-    def __init__(self, all_text: str):
-        self.all_text = all_text
+    def __init__(self):
+        self.golden_record: Dict[str, Any] = {}
+        self.validation_results: List[Dict[str, Any]] = []
 
-    def validate(self, docs: List[Dict[str, any]], primary_validation_text: str, primary_validation_file_bytes: bytes = None) -> Tuple[List, Dict]:
+    def create_golden_record(self, primary_doc: Dict[str, Any]):
         """
-        Runs all validation checks against a primary source.
-
-        The primary source is determined in two ways:
-        1. If a 'primary_validation_file_bytes' is provided, its text is used.
-        2. Otherwise, the user-provided 'primary_validation_text' is used.
-        3. If neither is provided, a "best-effort" validation is performed.
+        Populates the golden_record from a primary QC document (CSV).
         """
-        global_results = []
-        per_doc_results = defaultdict(list)
-
-        primary_source_text = ""
-        primary_source_name = ""
-
-        if primary_validation_file_bytes:
-            primary_doc = next((d for d in docs if "Primary_Validation" in d.get('filename', '')), None)
-            if primary_doc:
-                primary_source_text = primary_doc['text']
-                primary_source_name = f"file '{primary_doc['filename']}'"
-                docs.remove(primary_doc)
-        elif primary_validation_text.strip():
-            primary_source_text = primary_validation_text
-            primary_source_name = "the user-provided text"
-        
-        if not primary_source_text:
-            global_results.append({'status': 'warning', 'message': "No primary validation source provided. Running in 'best-effort' mode. For best results, please provide a primary validation source.", 'details': "Without a primary source, the system can only check for internal consistency."})
+        try:
+            # The text from file_processor is already a string representation of the CSV
+            csv_text = primary_doc.get('text', '')
+            df = pd.read_csv(StringIO(csv_text), header=None)
             
-            # Best-effort validation
-            all_upcs = defaultdict(list)
-            all_skus = defaultdict(list)
-            for doc in docs:
-                doc_text = doc['text'].replace("\n", " ")
-                for upc in re.findall(r'\b\d{12}\b', doc_text):
-                    all_upcs[upc].append(doc['filename'])
-                for sku in re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', doc_text, re.IGNORECASE):
-                    all_skus[sku].append(doc['filename'])
-
-            if len(all_upcs) > 1:
-                global_results.append({'status': 'failed', 'message': "Multiple UPCs found across documents.", 'details': f"Found UPCs: {', '.join(all_upcs.keys())}"})
-            if len(all_skus) > 1:
-                global_results.append({'status': 'orange', 'message': "Multiple SKUs found across documents. This may be due to product variations.", 'details': f"Found SKUs: {', '.join(all_skus.keys())}"})
+            # Heuristically find key-value pairs. This is fragile and depends on CSV structure.
+            # Example logic: Find the cell containing "PRODUCT SKU CODE" and get the value from a nearby cell.
+            # This needs to be adapted based on the actual, consistent structure of your QC sheets.
             
-            if len(all_upcs) <= 1 and len(all_skus) <= 1:
-                global_results.append({'status': 'passed', 'message': "All documents appear to be consistent.", 'details': "Only one SKU and one UPC were found across all documents."})
+            # A more robust approach might be to find the row containing the key.
+            # Let's assume keys are in column 1 and values are in column 4 for this example.
             
-            return global_results, per_doc_results
+            # Simplified extraction logic - you may need to make this more robust
+            sku_row = df[df.apply(lambda row: row.astype(str).str.contains('PRODUCT SKU CODE').any(), axis=1)]
+            if not sku_row.empty:
+                 # This is an example, you might need to find the exact cell location
+                self.golden_record['SKU'] = sku_row.iloc[0, 4]
 
-        # Extract key identifiers from the primary source
-        primary_upcs = set(re.findall(r'\b\d{12}\b', primary_source_text))
-        primary_udis = set(re.findall(r'\(01\)\d{14}', primary_source_text))
-        primary_skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', primary_source_text, re.IGNORECASE))
-        
-        global_results.append({'status': 'info', 'message': f"Validation is being performed against {primary_source_name}.", 'details': f"Primary UPCs: {', '.join(primary_upcs)}, Primary SKUs: {', '.join(primary_skus)}"})
+            name_row = df[df.apply(lambda row: row.astype(str).str.contains('PRODUCT NAME').any(), axis=1)]
+            if not name_row.empty:
+                self.golden_record['ProductName'] = name_row.iloc[0, 2]
+                
+            color_row = df[df.apply(lambda row: row.astype(str).str.contains('PRODUCT COLOR').any(), axis=1)]
+            if not color_row.empty:
+                self.golden_record['Color'] = color_row.iloc[0, 4]
+                
+            if self.golden_record:
+                self.validation_results.append({
+                    'status': 'info', 'check_name': 'Golden Record Creation',
+                    'message': f"Successfully created Golden Record from '{primary_doc['filename']}'.",
+                    'details': f"Record: {self.golden_record}"
+                })
+            else:
+                 self.validation_results.append({
+                    'status': 'failed', 'check_name': 'Golden Record Creation',
+                    'message': f"Could not create Golden Record from '{primary_doc['filename']}'.",
+                    'details': "Check file structure and content."
+                })
 
 
-        # --- Consistency Check against Other Documents ---
+        except Exception as e:
+            self.validation_results.append({
+                'status': 'failed', 'check_name': 'Golden Record Creation',
+                'message': f"Failed to parse QC sheet '{primary_doc['filename']}'.",
+                'details': str(e)
+            })
+
+    def validate_document(self, doc: Dict[str, Any]):
+        """
+        Runs a series of checks on a single document against the golden record.
+        """
+        doc_text = doc.get('text', '')
+        filename = doc.get('filename', 'Unknown File')
+
+        # Check 1: SKU Consistency
+        sku_in_record = self.golden_record.get('SKU')
+        if sku_in_record:
+            if re.search(re.escape(sku_in_record), doc_text, re.IGNORECASE):
+                self.validation_results.append({
+                    'status': 'passed', 'check_name': 'SKU Consistency',
+                    'message': f"✅ SKU '{sku_in_record}' found in '{filename}'.",
+                    'confidence': 'high'
+                })
+            else:
+                self.validation_results.append({
+                    'status': 'failed', 'check_name': 'SKU Consistency',
+                    'message': f"❌ SKU '{sku_in_record}' not found in '{filename}'.",
+                    'confidence': 'high'
+                })
+
+        # Check 2: Product Name Presence
+        product_name_in_record = self.golden_record.get('ProductName')
+        if product_name_in_record:
+            # Use a simplified version for matching (e.g., ignore 'Advanced')
+            short_name = product_name_in_record.replace('Advanced', '').strip()
+            if re.search(re.escape(short_name), doc_text, re.IGNORECASE):
+                self.validation_results.append({
+                    'status': 'passed', 'check_name': 'Product Name',
+                    'message': f"✅ Product Name '{short_name}' found in '{filename}'.",
+                    'confidence': 'high'
+                })
+            else:
+                self.validation_results.append({
+                    'status': 'warning', 'check_name': 'Product Name',
+                    'message': f"⚠️ Product Name '{short_name}' not found in '{filename}'.",
+                    'confidence': 'medium'
+                })
+
+
+    def validate(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Orchestrates the validation process.
+        1. Finds the primary QC sheet.
+        2. Creates the golden record.
+        3. Validates all other documents against it.
+        """
+        # Find the primary QC sheet first
+        primary_doc = next((doc for doc in docs if doc.get('doc_type') == 'qc_sheet'), None)
+
+        if not primary_doc:
+            self.validation_results.append({
+                'status': 'failed', 'check_name': 'Setup',
+                'message': "❌ No QC Sheet found to use as the source of truth.",
+                'details': "Please upload a file that can be identified as a 'qc_sheet' based on config.py."
+            })
+            return self.validation_results
+
+        self.create_golden_record(primary_doc)
+
+        # If golden record creation failed, stop
+        if not self.golden_record:
+            return self.validation_results
+            
+        # Validate all other documents
         for doc in docs:
-            doc_text = doc['text'].replace("\n", " ")
-            doc_upcs = set(re.findall(r'\b\d{12}\b', doc_text))
-            doc_skus = set(re.findall(r'\b(LVA\d{4,}|CSH\d{4,})[A-Z]*\b', doc_text, re.IGNORECASE))
+            if doc != primary_doc: # Don't validate the source against itself
+                self.validate_document(doc)
 
-            for upc in doc_upcs:
-                if primary_upcs and upc not in primary_upcs:
-                    global_results.append({'status': 'failed', 'message': f"UPC `{upc}` from '{doc['filename']}' does not match any UPC in the primary source.", 'details': f"Primary UPCs: {', '.join(primary_upcs)}"})
-            
-            for sku in doc_skus:
-                if primary_skus and sku.upper() not in [s.upper() for s in primary_skus]:
-                    global_results.append({'status': 'failed', 'message': f"SKU `{sku}` from '{doc['filename']}' does not match any SKU in the primary source.", 'details': f"Primary SKUs: {', '.join(primary_skus)}"})
-
-        if not any(r['status'] == 'failed' for r in global_results):
-             global_results.append({'status': 'passed', 'message': f"All documents are consistent with {primary_source_name}.", 'details': "All SKUs and UPCs match the primary source."})
-
-        return global_results, per_doc_results
+        return self.validation_results
