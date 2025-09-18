@@ -34,7 +34,7 @@ def display_instructions():
         - Click **"🔍 Run Verification"** to start the analysis. The app will process the files and display a detailed report.
         """)
 
-def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str, str, str, bool]:
+def display_sidebar(api_keys: Dict[str, str]):
     """Renders the sidebar with brand buttons, keyword inputs, and batch management."""
     with st.sidebar:
         st.header("⚙️ Controls")
@@ -58,17 +58,37 @@ def display_sidebar(api_keys: Dict[str, str]) -> Tuple[bool, str, str, str, str,
         brand_selection = st.session_state.get("brand_selection", "Vive")
         st.info(f"Selected Brand: **{brand_selection}**")
 
-        ai_provider = st.selectbox("Select AI Provider:", options=["openai", "anthropic"], help="Choose which AI service to use for analysis.")
-
-        st.markdown("**AI Compliance Keywords**")
-        must_contain_text = st.text_area("Must Contain (one per line):", height=100)
-        must_not_contain_text = st.text_area("Must NOT Contain (one per line):", height=100)
+        st.selectbox("Select AI Provider:", options=["openai", "anthropic"], help="Choose which AI service to use for analysis.", key='ai_provider')
         
-        st.divider()
-        run_validation = st.button("🔍 Run Verification", use_container_width=True)
-        run_test_validation = st.button("🧪 Run Test Validation", use_container_width=True)
+    st.session_state.run_validation = st.sidebar.button("🔍 Run Verification", use_container_width=True)
 
-    return run_validation, brand_selection, must_contain_text, must_not_contain_text, ai_provider, run_test_validation
+
+def display_main_interface():
+    """Displays the main UI with tabs for interaction and results."""
+    
+    # AI Chat and Instructions at the top
+    st.text_area("Optional: Provide special instructions for the AI Co-pilot:", key='custom_instructions', height=100)
+    display_chat_interface(st.session_state.get('batches', {}).get(st.session_state.get('current_batch_sku')))
+
+    tab1, tab2 = st.tabs(["📋 Manual Checklist & File Upload", "📊 AI Analysis Report"])
+
+    with tab1:
+        st.header("✅ Manual Verification")
+        st.session_state['uploaded_files'] = display_file_uploader()
+        
+        brand_selection = st.session_state.get("brand_selection", "Vive")
+        batch_key = st.session_state.get('current_batch_sku', 'standalone_checklist')
+        display_dynamic_checklist(brand_selection, batch_key)
+
+    with tab2:
+        st.header("🤖 AI Co-pilot Report")
+        current_batch_data = st.session_state.get('batches', {}).get(st.session_state.get('current_batch_sku'))
+        if current_batch_data:
+            display_results_page(current_batch_data)
+            display_pdf_previews(current_batch_data.get('uploaded_files_data', []))
+        else:
+            st.info("Run a verification to see the AI report here.")
+
 
 def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFile]:
     """Renders the file uploader with guidance on file size."""
@@ -81,7 +101,6 @@ def display_file_uploader() -> List[st.runtime.uploaded_file_manager.UploadedFil
     
 def display_dynamic_checklist(brand: str, batch_key: str):
     """Renders an interactive checklist based on the selected brand."""
-    st.header("✅ Manual Verification Checklist")
     with st.container(border=True):
         checklist_data = AppConfig.CHECKLISTS.get(brand, {})
         if not checklist_data:
@@ -242,7 +261,6 @@ def display_pdf_previews(files: List[Dict[str, Any]]):
 
 def display_chat_interface(batch_data: Dict = None):
     """Displays the AI chat interface."""
-    st.header("💬 Chat with AI Assistant")
     if "messages" not in st.session_state: st.session_state.messages = []
     
     for message in st.session_state.messages:
