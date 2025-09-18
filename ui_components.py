@@ -205,4 +205,9 @@ def display_results_page(batch_data: Dict):
                 for doc in docs_by_type[title]:
                     with st.expander(f"**{doc['filename']}**"):
                         text_preview = doc['text']
-                        if
+                        if len(text_preview) > 500:
+                            st.text(text_preview[:500] + "...")
+                            if st.button("Show More", key=f"show_more_{doc['filename']}"):
+                                st.text(text_preview)
+                        else:
+                            st.text(text_preview)
