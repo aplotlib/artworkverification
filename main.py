@@ -7,13 +7,8 @@ from validator import ArtworkValidator
 from ai_analyzer import AIReviewer, check_api_keys
 from ui_components import (
     display_header,
-    display_instructions,
     display_sidebar,
-    display_file_uploader,
-    display_results_page,
-    display_pdf_previews,
-    display_dynamic_checklist,
-    display_chat_interface
+    display_main_interface
 )
 
 @st.cache_data(show_spinner=False) # Spinner is handled manually
@@ -62,69 +57,40 @@ def main():
     if 'current_batch_sku' not in st.session_state: st.session_state.current_batch_sku = None
     if 'messages' not in st.session_state: st.session_state.messages = []
     if 'brand_selection' not in st.session_state: st.session_state.brand_selection = "Vive"
+    if 'run_validation' not in st.session_state: st.session_state.run_validation = False
 
     api_keys = check_api_keys()
-    run_validation, brand_selection, must_contain_text, must_not_contain_text, ai_provider, run_test_validation = display_sidebar(api_keys)
+    display_sidebar(api_keys)
     
     display_header()
     
     # --- Main Logic for Processing and Analysis ---
-    if run_validation or run_test_validation:
-        files_to_process = []
-        if run_test_validation:
-            test_data_dir = 'test_data'
-            if not os.path.exists(test_data_dir):
-                st.error(f"Test data directory not found. Please create a '{test_data_dir}' folder and add test files.")
-            else:
-                test_files = os.listdir(test_data_dir)
-                for file_name in test_files:
-                    file_path = os.path.join(test_data_dir, file_name)
-                    try:
-                        with open(file_path, "rb") as f: files_to_process.append({"name": file_name, "bytes": f.read()})
-                    except Exception as e:
-                        st.error(f"Could not read test file {file_path}: {e}")
+    if st.session_state.run_validation:
+        uploaded_files = st.session_state.get('uploaded_files', [])
+        if not uploaded_files:
+            st.toast("📂 Please upload artwork files first!", icon="⚠️")
         else:
-            uploaded_files = st.session_state.get('uploaded_files', [])
-            if not uploaded_files:
-                st.toast("📂 Please upload artwork files first!", icon="⚠️")
-            else:
-                files_to_process = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+            files_to_process = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
 
-        if files_to_process:
-            file_tuples = tuple(sorted(({"name": f["name"], "bytes": tuple(f["bytes"])} for f in files_to_process), key=lambda x: x['name']))
-            
-            analysis_results = run_analysis_cached(file_tuples, must_contain_text, must_not_contain_text, "", ai_provider)
+            if files_to_process:
+                file_tuples = tuple(sorted(({"name": f["name"], "bytes": tuple(f["bytes"])} for f in files_to_process), key=lambda x: x['name']))
+                
+                analysis_results = run_analysis_cached(file_tuples, st.session_state.get('must_contain', ''), st.session_state.get('must_not_contain', ''), st.session_state.get('custom_instructions', ''), st.session_state.get('ai_provider', 'openai'))
 
-            batch_key = analysis_results.get("skus", [])[0] if analysis_results.get("skus") else f"Batch-{int(time.time())}"
-            st.session_state.current_batch_sku = batch_key
-            
-            st.session_state.batches[batch_key] = {
-                "uploaded_files_data": [dict(f, bytes=tuple(f['bytes'])) for f in files_to_process],
-                "brand": brand_selection,
-                **analysis_results
-            }
-            st.session_state.messages = []
-            st.rerun()
+                batch_key = analysis_results.get("skus", [])[0] if analysis_results.get("skus") else f"Batch-{int(time.time())}"
+                st.session_state.current_batch_sku = batch_key
+                
+                st.session_state.batches[batch_key] = {
+                    "uploaded_files_data": [dict(f, bytes=tuple(f['bytes'])) for f in files_to_process],
+                    "brand": st.session_state.brand_selection,
+                    **analysis_results
+                }
+                st.session_state.messages = []
+                st.session_state.run_validation = False
+                st.rerun()
 
     # --- Display Area ---
-    main_display_area = st.container()
-    
-    with main_display_area:
-        current_batch_sku = st.session_state.get('current_batch_sku')
-        current_batch_data = st.session_state.batches.get(current_batch_sku)
+    display_main_interface()
 
-        if current_batch_data:
-            display_results_page(current_batch_data)
-            col1, col2 = st.columns(2)
-            with col1:
-                display_dynamic_checklist(current_batch_data.get('brand', 'Vive'), current_batch_sku)
-            with col2:
-                display_pdf_previews(current_batch_data.get('uploaded_files_data', []))
-            display_chat_interface(current_batch_data)
-        else:
-            display_instructions()
-            st.session_state['uploaded_files'] = display_file_uploader()
-            display_dynamic_checklist(st.session_state.brand_selection, "standalone_checklist")
-            
 if __name__ == "__main__":
     main()
