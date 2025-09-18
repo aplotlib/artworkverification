@@ -1,6 +1,5 @@
 import streamlit as st
 import openai
-import anthropic
 import time
 import json
 from typing import List, Dict, Any
@@ -13,8 +12,6 @@ def check_api_keys() -> Dict[str, str]:
     if hasattr(st, 'secrets'):
         for key in ['openai_api_key', 'OPENAI_API_KEY']:
             if key in st.secrets and st.secrets[key]: keys['openai'] = st.secrets[key]
-        for key in ['anthropic_api_key', 'ANTHROPIC_API_KEY', 'claude_api_key']:
-            if key in st.secrets and st.secrets[key]: keys['anthropic'] = st.secrets[key]
     return keys
 
 class AIReviewer:
@@ -22,49 +19,32 @@ class AIReviewer:
 
     def __init__(self, api_keys: Dict[str, str], provider: str = "openai"):
         self.api_keys = api_keys
-        self.provider = provider
+        self.provider = provider # Kept for consistency, but will always be 'openai'
         if 'openai' in api_keys:
             self.openai_client = openai.OpenAI(
                 api_key=api_keys.get('openai'),
                 timeout=AppConfig.AI_API_TIMEOUT
             )
-        if 'anthropic' in api_keys:
-            self.anthropic_client = anthropic.Anthropic(
-                api_key=api_keys.get('anthropic'),
-                timeout=AppConfig.AI_API_TIMEOUT
-            )
+        else:
+            self.openai_client = None
 
     def _safe_ai_call(self, prompt: str, model: str, is_json: bool = False) -> Dict[str, Any]:
-        """A centralized, safe wrapper for all AI API calls."""
-        if self.provider == "openai":
-            if not hasattr(self, 'openai_client'):
-                return {"success": False, "error": "OpenAI API key not configured."}
-            try:
-                response_format = {"type": "json_object"} if is_json else None
-                response = self.openai_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    response_format=response_format
-                )
-                content = response.choices[0].message.content
-                return {"success": True, "data": json.loads(content) if is_json else content}
-            except Exception as e:
-                return {"success": False, "error": f"An unexpected AI error occurred: {e}"}
+        """A centralized, safe wrapper for all OpenAI API calls."""
+        if not self.openai_client:
+            return {"success": False, "error": "OpenAI API key not configured."}
         
-        elif self.provider == "anthropic":
-            if not hasattr(self, 'anthropic_client'):
-                return {"success": False, "error": "Anthropic API key not configured."}
-            try:
-                response = self.anthropic_client.messages.create(
-                    model=model,
-                    max_tokens=4096,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                content = response.content[0].text
-                return {"success": True, "data": json.loads(content) if is_json else content}
-            except Exception as e:
-                return {"success": False, "error": f"An unexpected AI error occurred: {e}"}
+        try:
+            response_format = {"type": "json_object"} if is_json else None
+            response = self.openai_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                response_format=response_format
+            )
+            content = response.choices[0].message.content
+            return {"success": True, "data": json.loads(content) if is_json else content}
+        except Exception as e:
+            return {"success": False, "error": f"An unexpected AI error occurred: {e}"}
 
     def run_ai_ocr_correction(self, text: str) -> str:
         """Uses AI to correct OCR errors with improved context."""
@@ -83,16 +63,17 @@ RAW OCR TEXT:
 {text}
 ---
 """
-        model = AppConfig.AI_MODELS[self.provider]['standard']
+        model = AppConfig.AI_MODELS['openai']['standard']
         result = self._safe_ai_call(prompt, model)
         return result["data"] if result["success"] else text
 
+    # ... (the rest of the methods in ai_analyzer.py remain the same)
     def run_ai_fact_extraction(self, text: str) -> Dict[str, Any]:
         """Uses AI to extract key facts into a structured JSON."""
         prompt = f"""You are an expert data extraction agent. Extract key information from the following text into a JSON object: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', 'Dimensions', 'MaterialComposition'. Use null if a field is not present.
         TEXT TO ANALYZE: --- {text} ---
         Respond with ONLY the JSON object."""
-        model = AppConfig.AI_MODELS[self.provider]['standard']
+        model = AppConfig.AI_MODELS['openai']['standard']
         result = self._safe_ai_call(prompt, model, is_json=True)
         return result
 
@@ -106,48 +87,18 @@ RAW OCR TEXT:
         MUST CONTAIN PHRASES: --- {must_contain} ---
         MUST NOT CONTAIN PHRASES: --- {must_not_contain} ---
         Respond with ONLY a JSON object containing a list called 'results'. Each item needs 'phrase', 'status' ('Pass' or 'Fail'), and 'reasoning' keys."""
-        model = AppConfig.AI_MODELS[self.provider]['standard']
+        model = AppConfig.AI_MODELS['openai']['standard']
         result = self._safe_ai_call(prompt, model, is_json=True)
         if result["success"] and isinstance(result["data"], dict) and "results" in result["data"]:
              return {"success": True, "data": result["data"]["results"]}
         return result
-    
-    def run_ai_consistency_audit(self, docs: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Uses a powerful AI to find logical conflicts between multiple documents."""
-        
-        # Create a single text bundle with clear separators
-        text_bundle = ""
-        for doc in docs:
-            filename = doc.get('filename', 'Unknown Document')
-            doc_type = doc.get('doc_type', 'uncategorized')
-            text = doc.get('text', '')
-            text_bundle += f"--- START {doc_type}: {filename} ---\n{text}\n\n"
-
-        prompt = f"""You are a Senior QA Inspector specializing in medical device packaging. Your task is to analyze the following bundle of text extracted from multiple artwork files for the same product. Identify any logical inconsistencies or conflicts between the documents.
-
-Pay close attention to conflicts in:
-- **Product Name:** Are there different variations of the product name?
-- **SKU or Item Code:** Do all documents list the exact same SKU?
-- **Country of Origin:** Is the 'Made In' country consistent everywhere?
-- **Care Instructions:** Do the washtag instructions conflict with the manual?
-- **Contact Information:** Is the company address, phone number, or website the same in all documents?
-- **Technical Specifications:** Are there conflicting dimensions, materials, or quantities mentioned?
-
-Analyze the text bundle below and respond with ONLY a JSON object. The object should contain a list named 'inconsistencies'. Each item in the list must have three keys: 'confidence' (high, medium, or low), 'description' (a clear explanation of the conflict), and 'sources' (a list of the filenames involved). If there are no inconsistencies, return an empty list.
-
-TEXT BUNDLE:
-{text_bundle}
-"""
-        model = AppConfig.AI_MODELS[self.provider]['advanced'] # Use the most powerful model
-        return self._safe_ai_call(prompt, model, is_json=True)
-
 
     def run_ai_quality_check(self, text: str) -> Dict[str, Any]:
         """Uses AI to check for spelling and grammar issues."""
         prompt = f"""You are a proofreading expert. Analyze the following text for clear spelling and grammar errors.
         TEXT TO ANALYZE: --- {text} ---
         Respond with ONLY a JSON object with a list called 'issues'. Each issue needs 'error', 'correction', and 'context' keys. If no issues, the list should be empty."""
-        model = AppConfig.AI_MODELS[self.provider]['standard']
+        model = AppConfig.AI_MODELS['openai']['standard']
         return self._safe_ai_call(prompt, model, is_json=True)
 
     def generate_executive_summary(self, docs: List[Dict[str, Any]], rule_results: List, compliance_results: List, quality_results: Dict[str, Any], custom_instructions: str) -> str:
@@ -165,7 +116,7 @@ TEXT BUNDLE:
         1.  **Address Instructions First:** Start with a direct answer to the user's special instructions.
         2.  **Write Executive Summary:** Following that, provide a holistic summary of all findings. Use clear headings and bullet points.
         """
-        model = AppConfig.AI_MODELS[self.provider]['advanced']
+        model = AppConfig.AI_MODELS['openai']['advanced']
         result = self._safe_ai_call(prompt, model)
         return result["data"] if result["success"] else f"**Error generating summary:** {result['error']}"
 
@@ -176,15 +127,10 @@ TEXT BUNDLE:
             system_message += f"\n\n## Current Analysis Context ##\nUse the following data to answer questions about the recent report:\n{json.dumps(analysis_context, indent=2)}"
         
         messages = [{"role": "system", "content": system_message}] + history[-10:]
-        client = self.openai_client if self.provider == "openai" else self.anthropic_client
-        if not client: return "AI provider not configured."
+        if not self.openai_client: return "AI provider not configured."
         
         try:
-            if self.provider == "openai":
-                response = self.openai_client.chat.completions.create(model=AppConfig.AI_MODELS[self.provider]['chat'], messages=messages, temperature=0.3)
-                return response.choices[0].message.content
-            else:
-                response = self.anthropic_client.messages.create(model=AppConfig.AI_MODELS[self.provider]['chat'], max_tokens=1024, messages=history)
-                return response.content[0].text
+            response = self.openai_client.chat.completions.create(model=AppConfig.AI_MODELS['openai']['chat'], messages=messages, temperature=0.3)
+            return response.choices[0].message.content
         except Exception as e:
             return f"An error occurred with the AI: {e}"
