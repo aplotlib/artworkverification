@@ -1,124 +1,103 @@
 import streamlit as st
-import time
 import os
-from config import AppConfig
-from file_processor import process_files_cached
+import google.generativeai as genai
+from config import Config, load_css
+from file_processor import FileProcessor
+from checklist_manager import ChecklistManager
 from validator import ArtworkValidator
-from ai_analyzer import AIReviewer, check_api_keys
-from ui_components import (
-    display_header,
-    display_sidebar,
-    display_main_interface
-)
+from ai_analyzer import AIAnalyzer
 
-@st.cache_data(show_spinner=False)
-def run_analysis_cached(files, must_contain_text, must_not_contain_text, custom_instructions, analysis_mode, primary_validation_text):
-    """
-    Performs all validation and AI analysis. Caching this function prevents
-    re-running AI calls for the same data.
-    """
-    results = {}
+# --- Setup ---
+st.set_page_config(page_title=Config.PAGE_TITLE, page_icon=Config.PAGE_ICON, layout=Config.LAYOUT)
+load_css()
+
+# Initialize Session State
+if 'validation_results' not in st.session_state:
+    st.session_state['validation_results'] = None
+
+# Sidebar - Configuration
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/1055/1055644.png", width=50) # Placeholder icon
+    st.title("Artwork Pro")
     
-    # --- Step 1: File Processing (with conditional OCR) ---
-    with st.spinner("Step 1/2: Processing and extracting text from files..."):
-        processed_docs, skus = process_files_cached(files, analysis_mode)
-        results.update({
-            "skus": skus,
-            "processed_docs": processed_docs
-        })
-
-    # --- Step 2: AI Analysis (conditional) ---
-    if analysis_mode in ["OCR + AI Analysis", "AI Analysis Only"]:
-        with st.spinner("Step 2/2: Running AI analysis and validation... This may take a moment."):
-            all_text = "\n\n".join(doc['text'] for doc in processed_docs)
-            
-            api_keys = check_api_keys()
-            if not api_keys.get("openai"):
-                results["error"] = "OpenAI API key not found."
-                return results
-
-            reviewer = AIReviewer(api_keys, provider="openai")
-            
-            packaging_doc_text = next((d['text'] for d in processed_docs if d['doc_type'] == 'packaging_artwork'), all_text)
-            
-            validator = ArtworkValidator()
-            global_results, per_doc_results = validator.validate(processed_docs.copy())
-            
-            ai_facts = reviewer.run_ai_fact_extraction(packaging_doc_text)
-            compliance_results = reviewer.run_ai_compliance_check(ai_facts.get('data', {}), must_contain_text, must_not_contain_text)
-            quality_results = reviewer.run_ai_quality_check(all_text)
-            ai_summary = reviewer.generate_executive_summary(processed_docs, global_results, compliance_results.get('data', []), quality_results, custom_instructions)
-            
-            results.update({
-                "global_results": global_results,
-                "per_doc_results": per_doc_results,
-                "ai_summary": ai_summary,
-                "ai_facts": ai_facts,
-                "compliance_results": compliance_results,
-                "quality_results": quality_results
-            })
-
-    return results
-
-def main():
-    st.set_page_config(page_title=AppConfig.APP_TITLE, page_icon=AppConfig.PAGE_ICON, layout="wide")
+    api_key = st.text_input("Gemini API Key", type="password")
+    if api_key:
+        genai.configure(api_key=api_key)
     
-    # --- Session State Initialization ---
-    if 'batches' not in st.session_state: 
-        st.session_state.batches = {}
-    if 'current_batch_sku' not in st.session_state: 
-        st.session_state.current_batch_sku = None
-    if 'messages' not in st.session_state: 
-        st.session_state.messages = []
-    if 'brand_selection' not in st.session_state: 
-        st.session_state.brand_selection = "Vive"
-    if 'run_validation' not in st.session_state: 
-        st.session_state.run_validation = False
-    if 'selected_batch_for_review' not in st.session_state:
-        st.session_state.selected_batch_for_review = None
-    if 'analysis_mode' not in st.session_state:
-        st.session_state.analysis_mode = "OCR + AI Analysis" # Default value
-
-    api_keys = check_api_keys()
-    display_sidebar(api_keys)
+    st.divider()
     
-    display_header()
+    brand_choice = st.selectbox("Select Brand Checklist", ["Vive Health", "Coretech"])
     
-    if st.session_state.run_validation:
-        uploaded_files = st.session_state.get('uploaded_files', [])
-        if not uploaded_files:
-            st.toast("📂 Please upload artwork files first!", icon="⚠️")
-        else:
-            files_to_process = [{"name": f.name, "bytes": f.getvalue()} for f in uploaded_files]
+    st.divider()
+    st.info("System ready. Upload artwork to begin validation.")
 
-            if files_to_process:
-                file_tuples = tuple(sorted(({"name": f["name"], "bytes": tuple(f["bytes"])} for f in files_to_process), key=lambda x: x['name']))
+# --- Main Content ---
+st.title(f"{Config.PAGE_ICON} {Config.PAGE_TITLE}")
+st.write("Automated verification against Brand Checklists and Historical Error Tracker.")
+
+# 1. Upload Section
+uploaded_file = st.file_uploader("Upload Artwork (PDF/Image)", type=Config.ALLOWED_EXTENSIONS)
+
+if uploaded_file and api_key:
+    col1, col2 = st.columns([1, 1])
+    
+    # 2. Processing
+    processor = FileProcessor()
+    text, img_parts, preview_image = processor.process_file(uploaded_file)
+    
+    with col1:
+        st.subheader("Artwork Preview")
+        if preview_image:
+            st.image(preview_image, use_column_width=True)
+        
+        with st.expander("View Extracted Text"):
+            st.text(text[:1000] + "...")
+
+    # 3. Validation Logic
+    with col2:
+        st.subheader("Analysis & Validation")
+        
+        if st.button("Run Verification"):
+            with st.spinner("Consulting Knowledge Base & Analyzing Visuals..."):
                 
-                analysis_results = run_analysis_cached(
-                    file_tuples, 
-                    st.session_state.get('must_contain', ''), 
-                    st.session_state.get('must_not_contain', ''), 
-                    st.session_state.get('custom_instructions', ''), 
-                    st.session_state.get('analysis_mode', 'OCR + AI Analysis'),
-                    st.session_state.get('primary_validation_text', '')
-                )
-
-                skus = analysis_results.get("skus", [])
-                batch_key = skus[0] if skus else f"Batch-{int(time.time())}"
+                # A. Load Context
+                checklist_mgr = ChecklistManager()
+                # Determine path based on selection
+                checklist_path = Config.VIVE_CHECKLIST_PATH if brand_choice == "Vive Health" else Config.CORETECH_CHECKLIST_PATH
                 
-                st.session_state.current_batch_sku = batch_key
+                rules = checklist_mgr.load_checklist(checklist_path, brand_choice)
+                errors = checklist_mgr.get_common_errors(Config.ERROR_TRACKER_PATH)
                 
-                st.session_state.batches[batch_key] = {
-                    "uploaded_files_data": [dict(f, bytes=tuple(f['bytes'])) for f in files_to_process],
-                    "brand": st.session_state.brand_selection,
-                    **analysis_results
-                }
-                st.session_state.messages = []
-                st.session_state.run_validation = False
-                st.toast('✅ Analysis complete! Click the "AI Analysis Report" tab to view the results.', icon="🎉")
-                st.rerun()
+                # B. AI Analysis
+                analyzer = AIAnalyzer(api_key, Config.MODEL_NAME)
+                # Convert rules to string for AI context
+                checklist_str = "\n".join([r['requirement'] for r in rules[:10]]) # Pass top 10 critical rules
+                ai_results = analyzer.analyze_artwork(img_parts, checklist_str, errors)
+                
+                # C. Logic Validation
+                validator = ArtworkValidator(rules, errors)
+                final_report = validator.run_validation(text, uploaded_file.name, ai_results)
+                
+                st.session_state['validation_results'] = final_report
 
-    display_main_interface()
+        # 4. Display Results
+        if st.session_state['validation_results']:
+            res = st.session_state['validation_results']
+            
+            # Scorecards
+            s1, s2, s3 = st.columns(3)
+            s1.metric("PASS", res['summary']['pass'])
+            s2.metric("FAIL", res['summary']['fail'])
+            s3.metric("WARNING", res['summary']['warning'])
+            
+            st.divider()
+            
+            # Detailed List
+            for item in res['details']:
+                icon = "✅" if item['status'] == "PASS" else "❌" if item['status'] == "FAIL" else "⚠️"
+                with st.expander(f"{icon} {item['check']} ({item['category']})"):
+                    st.write(f"**Status:** {item['status']}")
+                    st.write(f"**Observation:** {item['observation']}")
 
-if __name__ == "__main__":
-    main()
+elif not api_key:
+    st.warning("Please enter your Gemini API Key in the sidebar to proceed.")
