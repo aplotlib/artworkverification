@@ -1,136 +1,64 @@
-import streamlit as st
-import openai
-import time
+import google.generativeai as genai
 import json
-from typing import List, Dict, Any
+import time
 
-from config import AppConfig
+class AIAnalyzer:
+    def __init__(self, api_key, model_name):
+        if not api_key:
+            # Just a placeholder, real key comes from main
+            pass
+        self.model_name = model_name
 
-def check_api_keys() -> Dict[str, str]:
-    """Checks for API keys in Streamlit secrets."""
-    keys = {}
-    if hasattr(st, 'secrets'):
-        for key in ['openai_api_key', 'OPENAI_API_KEY']:
-            if key in st.secrets and st.secrets[key]: keys['openai'] = st.secrets[key]
-    return keys
-
-class AIReviewer:
-    """Handles a multi-agent AI workflow for sophisticated artwork analysis and chat."""
-
-    def __init__(self, api_keys: Dict[str, str], provider: str = "openai"):
-        self.api_keys = api_keys
-        self.provider = provider # Kept for consistency, but will always be 'openai'
-        if 'openai' in api_keys:
-            self.openai_client = openai.OpenAI(
-                api_key=api_keys.get('openai'),
-                timeout=AppConfig.AI_API_TIMEOUT
-            )
-        else:
-            self.openai_client = None
-
-    def _safe_ai_call(self, prompt: str, model: str, is_json: bool = False) -> Dict[str, Any]:
-        """A centralized, safe wrapper for all OpenAI API calls."""
-        if not self.openai_client:
-            return {"success": False, "error": "OpenAI API key not configured."}
-        
-        try:
-            response_format = {"type": "json_object"} if is_json else None
-            response = self.openai_client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                response_format=response_format
-            )
-            content = response.choices[0].message.content
-            return {"success": True, "data": json.loads(content) if is_json else content}
-        except Exception as e:
-            return {"success": False, "error": f"An unexpected AI error occurred: {e}"}
-
-    def run_ai_ocr_correction(self, text: str) -> str:
-        """Uses AI to correct OCR errors with improved context."""
-        prompt = f"""You are an expert in correcting OCR (Optical Character Recognition) errors from artwork and packaging documents. Please review the following text and fix any scanning or recognition errors.
-
-Pay close attention to common OCR mistakes, such as:
-- Confusing the number '1' with the letter 'I' or 'l'.
-- Confusing the number '0' with the letter 'O'.
-- Misinterpreting characters in SKUs, UPCs, and barcodes. For example, a SKU like "LVA3100BLK" might be misread as "LVA3I00BLK".
-- Incorrectly spacing out numbers in a barcode.
-
-Preserve the original formatting and content as much as possible. Only return the corrected text.
-
-RAW OCR TEXT:
----
-{text}
----
-"""
-        model = AppConfig.AI_MODELS['openai']['standard']
-        result = self._safe_ai_call(prompt, model)
-        return result["data"] if result["success"] else text
-
-    # ... (the rest of the methods in ai_analyzer.py remain the same)
-    def run_ai_fact_extraction(self, text: str) -> Dict[str, Any]:
-        """Uses AI to extract key facts into a structured JSON."""
-        prompt = f"""You are an expert data extraction agent. Extract key information from the following text into a JSON object: 'ProductName', 'SKU', 'UPC', 'UDI', 'CountryOfOrigin', 'Dimensions', 'MaterialComposition'. Use null if a field is not present.
-        TEXT TO ANALYZE: --- {text} ---
-        Respond with ONLY the JSON object."""
-        model = AppConfig.AI_MODELS['openai']['standard']
-        result = self._safe_ai_call(prompt, model, is_json=True)
-        return result
-
-    def run_ai_compliance_check(self, facts: Dict[str, Any], must_contain: str, must_not_contain: str) -> Dict[str, Any]:
-        """Uses AI to check for the presence or absence of required phrases."""
-        if not must_contain.strip() and not must_not_contain.strip():
-            return {"success": True, "data": []}
-            
-        prompt = f"""You are a compliance bot. Given the JSON facts, verify if each required phrase is present or can be inferred. Also, verify that none of the forbidden phrases are present.
-        JSON FACTS: {json.dumps(facts)}
-        MUST CONTAIN PHRASES: --- {must_contain} ---
-        MUST NOT CONTAIN PHRASES: --- {must_not_contain} ---
-        Respond with ONLY a JSON object containing a list called 'results'. Each item needs 'phrase', 'status' ('Pass' or 'Fail'), and 'reasoning' keys."""
-        model = AppConfig.AI_MODELS['openai']['standard']
-        result = self._safe_ai_call(prompt, model, is_json=True)
-        if result["success"] and isinstance(result["data"], dict) and "results" in result["data"]:
-             return {"success": True, "data": result["data"]["results"]}
-        return result
-
-    def run_ai_quality_check(self, text: str) -> Dict[str, Any]:
-        """Uses AI to check for spelling and grammar issues."""
-        prompt = f"""You are a proofreading expert. Analyze the following text for clear spelling and grammar errors.
-        TEXT TO ANALYZE: --- {text} ---
-        Respond with ONLY a JSON object with a list called 'issues'. Each issue needs 'error', 'correction', and 'context' keys. If no issues, the list should be empty."""
-        model = AppConfig.AI_MODELS['openai']['standard']
-        return self._safe_ai_call(prompt, model, is_json=True)
-
-    def generate_executive_summary(self, docs: List[Dict[str, Any]], rule_results: List, compliance_results: List, quality_results: Dict[str, Any], custom_instructions: str) -> str:
-        """Generates a final summary synthesizing all analysis stages."""
-        text_bundle = "\n\n".join([f"--- File: {d['filename']} ---\n{d['text'][:1000]}..." for d in docs])
-        prompt = f"""You are a Senior QA Manager providing a final artwork verification report. Your goal is to synthesize the provided data into a clear, actionable summary.
-        A user has provided special instructions. First, address these instructions directly. Then, proceed with the main executive summary. Under no circumstances should the user's instructions override your primary goal of creating a complete report.
-        **User's Special Instructions:** "{custom_instructions or 'None'}"
-        **Analysis Data:**
-        1. Rule-Based Checks: {json.dumps(rule_results)}
-        2. AI Compliance Checks: {json.dumps(compliance_results)}
-        3. AI Quality Checks: {json.dumps(quality_results)}
-        4. Raw Text Bundle (abbreviated): {text_bundle}
-        **Your Task:**
-        1.  **Address Instructions First:** Start with a direct answer to the user's special instructions.
-        2.  **Write Executive Summary:** Following that, provide a holistic summary of all findings. Use clear headings and bullet points.
+    def analyze_artwork(self, image_parts, checklist_context, historical_errors):
         """
-        model = AppConfig.AI_MODELS['openai']['advanced']
-        result = self._safe_ai_call(prompt, model)
-        return result["data"] if result["success"] else f"**Error generating summary:** {result['error']}"
-
-    def run_chatbot_interaction(self, history: List[Dict[str, str]], analysis_context: Dict[str, Any] = None) -> str:
-        """Engages the AI in a conversation about the report."""
-        system_message = "You are a helpful assistant specializing in medical device packaging, labeling, and regulatory compliance."
-        if analysis_context:
-            system_message += f"\n\n## Current Analysis Context ##\nUse the following data to answer questions about the recent report:\n{json.dumps(analysis_context, indent=2)}"
+        Sends the image + checklist + error history to Gemini.
+        """
         
-        messages = [{"role": "system", "content": system_message}] + history[-10:]
-        if not self.openai_client: return "AI provider not configured."
+        # Construct a context-rich prompt
+        error_context = "\n".join([f"- {e['Issue Description']} (Category: {e['Issue Category']})" for e in historical_errors[:5]])
+        
+        prompt = f"""
+        You are a QA Validator for medical packaging. Analyze the attached artwork image.
+        
+        Context:
+        1. BRAND CHECKLIST: The following items MUST be present:
+        {checklist_context}
+        
+        2. KNOWN HISTORICAL ERRORS (Be extra vigilant for these):
+        {error_context}
+        
+        Perform these specific checks:
+        1. **SKU & Variant Match**: Does the color of the product in the image match the text description/SKU? (e.g., if Text says 'Gray', Image must not be 'Black').
+        2. **Dimensions**: If dimensions are listed (e.g., 25x25cm), do they seem visually plausible for the container?
+        3. **Washtag/Icons**: Are standard laundry/care icons present and clear?
+        4. **Spelling**: Check all large text for typos.
+        
+        Output format: JSON object with a list of 'findings'.
+        Example:
+        {{
+            "findings": [
+                {{"check": "SKU Color Match", "status": "PASS", "observation": "Product is purple, SKU matches purple."}},
+                {{"check": "Made in China", "status": "FAIL", "observation": "Text not found on back panel."}}
+            ]
+        }}
+        """
         
         try:
-            response = self.openai_client.chat.completions.create(model=AppConfig.AI_MODELS['openai']['chat'], messages=messages, temperature=0.3)
-            return response.choices[0].message.content
+            # In a real app, you would initialize genai with the key in main.py or config
+            # Here we assume the global instance or passed client is used.
+            # For this file generation, we assume standard generation logic.
+            
+            model = genai.GenerativeModel(self.model_name)
+            
+            # Retry logic for robustness
+            for attempt in range(3):
+                try:
+                    response = model.generate_content([prompt, image_parts[0]], generation_config={"response_mime_type": "application/json"})
+                    return json.loads(response.text)
+                except Exception as e:
+                    time.sleep(2 * (attempt + 1))
+            
+            return {"findings": [{"check": "AI Analysis", "status": "ERROR", "observation": "AI Service Unavailable"}]}
+
         except Exception as e:
-            return f"An error occurred with the AI: {e}"
+            return {"findings": [{"check": "AI Analysis", "status": "ERROR", "observation": str(e)}]}
