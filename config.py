@@ -1,161 +1,42 @@
+import os
 import streamlit as st
 
-class AppConfig:
-    """Holds the configuration constants for the application."""
-    APP_TITLE = "Vive Health Artwork Verification Co-pilot"
+class Config:
+    PAGE_TITLE = "Artwork Verification Pro"
     PAGE_ICON = "🎨"
-    MAX_FILE_SIZE_MB = 200
-    SERVER_MAX_UPLOAD_SIZE = MAX_FILE_SIZE_MB
-    SHARED_FILE_KEYWORDS = ['manual', 'qsg', 'quickstart', 'washtag', 'logo', 'thank you', 'ty_card']
-    DOC_TYPE_MAP = {
-        'packaging_artwork': ['packaging', 'box', 'sticker'],
-        'manual': ['manual', 'qsg', 'quickstart'],
-        'wash_tag': ['washtag', 'wash tag', 'care'],
-        'shipping_mark': ['shipping', 'mark', 'carton'],
-        'qc_sheet': ['qc', 'quality', 'sheet', 'specs', '.csv', '.xlsx'],
-        'logo_tag': ['logo_tag', 'logo'],
-        'udi_label': ['udi'],
-        'thank_you_card': ['thank you', 'ty_card']
-    }
-    AI_BATCH_MAX_CHARS = 10000
-    AI_API_TIMEOUT = 45
+    LAYOUT = "wide"
+    
+    # AI Configuration
+    # Using the Flash model for speed and vision capabilities
+    MODEL_NAME = "gemini-2.0-flash-exp" 
+    
+    # File Upload Settings
+    ALLOWED_EXTENSIONS = ["pdf", "jpg", "jpeg", "png", "csv"]
+    
+    # System Prompts
+    # We inject the "Persona" here to ensure the AI acts like a QC Engineer
+    SYSTEM_PROMPT = """
+    You are an expert Quality Control Specialist for medical device packaging (Vive Health/Coretech). 
+    Your goal is to catch errors before production. 
+    
+    CRITICAL RULES:
+    1. ACCURACY: Do not hallucinate text. If you can't read it, say "Unreadable".
+    2. CONTEXT: Compare the visual design against the text content.
+    3. SENSITIVITY: Be highly critical of "Made in China" placement, Barcode readability, and Spelling.
+    4. BRANDING: Ensure fonts and logos match the brand style (Vive vs Coretech).
+    """
+    
+    # Paths to reference files (assuming they are in the root or a data folder)
+    VIVE_CHECKLIST_PATH = "Artwork Checklist.xlsx - Vive.csv"
+    CORETECH_CHECKLIST_PATH = "Artwork Checklist.xlsx - Coretech.csv"
+    ERROR_TRACKER_PATH = "Artwork Error Tracker (1).xlsx - Sheet1.csv"
 
-    AI_MODELS = {
-        "openai": {
-            "standard": "gpt-4o-mini",
-            "advanced": "gpt-4o",
-            "chat": "gpt-4o-mini"
-        }
-    }
-
-    BRAND_GUIDE = {
-        "fonts": {
-            "main": ["Poppins"],
-            "secondary": ["Montserrat", "Arial"]
-        },
-        "colors": {
-            "brand_color": {"name": "Vive Teal", "hex": "#23b2be", "rgb": (35, 178, 190)},
-            "complementary_colors": [
-                {"name": "Vive Dark Blue", "hex": "#004366", "rgb": (0, 67, 102)},
-                {"name": "Vive Orange", "hex": "#eb3300", "rgb": (235, 51, 0)},
-                {"name": "Vive Yellow", "hex": "#f0b323", "rgb": (240, 179, 35)},
-                {"name": "Vive Gray", "hex": "#777473", "rgb": (119, 116, 115)}
-            ]
-        },
-        "color_tolerance": 20.0,
-        "COLOR_IGNORE_LIST": [
-            (0, 0, 0),       # Black
-            (255, 255, 255)  # White
-        ]
-    }
-
-    CHECKLISTS = {
-        "Vive": {
-            "Packaging": [
-                "Product Name Consistency",
-                "SKU ID",
-                "UPC and UDI",
-                "Image Visual",
-                "Country Origin (Made in China)",
-                "Made in China sticker"
-            ],
-            "Manual": [
-                "Product Name Consistency",
-                "SKU ID",
-                "Outlined Texts",
-                "QR Code matches the shortlink",
-                "Country Origin",
-                "Check dims if it will fit in the box"
-            ],
-            "Quickstart, IFU": [
-                "Product Name Consistency",
-                "SKU ID",
-                "Outlined Texts",
-                "QR Code matches the shortlink",
-                "UDI",
-                "Product QR Code",
-                "Giftbox UDI on Packaging",
-                "Master Carton UDI on Shipping Mark"
-            ],
-            "Inserts/Stickers": [
-                "Thank you Card (Vive Products only)",
-                "Warning label",
-                "Other Inserts (e.g. Vive Now, Neoprene, Air out, Fit info)"
-            ],
-            "Washtag": [
-                "Country Origin",
-                "Multivariant? (one washtag/size or color)"
-            ],
-            "Shipping Mark": [
-                "Confirm qty-ctn from R&D",
-                "Confirm Origin (Made in ...)"
-            ],
-            "QC Sheet (Cross Check with R&D)": [
-                "Packaging Dims",
-                "Logo Print/tag placement/color",
-                "Wash tag placement/color",
-                "UDI Info",
-                "Sticker placements",
-                "Match barcode on artworks"
-            ],
-            "Final Checks": [
-                "All text checked with AI",
-                "QR Codes scanned with mobile app"
-            ]
-        },
-        "Coretech": {
-            "Packaging": [
-                "Product Name Consistency",
-                "SKU ID",
-                "UPC and UDI",
-                "Image Visual",
-                "Country Origin (Made in China)"
-            ],
-            "Manual": [
-                "Product Name Consistency",
-                "SKU ID",
-                "Outlined Texts",
-                "QR Code matches the shortlink",
-                "Check dims if it will fit in the box"
-            ],
-            "Quickstart, IFU": [
-                "Product Name Consistency",
-                "SKU ID",
-                "Outlined Texts",
-                "QR Code matches the shortlink",
-                "UDI",
-                "Product QR Code",
-                "Master Carton UDI on Shipping Mark"
-            ],
-            "Inserts/Stickers": [
-                "Billing Sticker",
-                "Warning label",
-                "Other Inserts (e.g. Vive Now, Neoprene, Air out)"
-            ],
-            "Billing Sticker Details": [
-                "SKU ID",
-                "HCPCS and Lot #",
-                "Match Size to Barcode and UDI"
-            ],
-            "Washtag": [
-                "Country Origin",
-                "Multivariant? (one washtag/size or color)"
-            ],
-            "Shipping Mark": [
-                "Confirm qty-ctn from R&D",
-                "Confirm Origin (Made in ...)"
-            ],
-            "QC Sheet (Cross Check with R&D)": [
-                "Packaging Dims",
-                "Logo Print/tag placement/color",
-                "Wash tag placement/color",
-                "UDI Info",
-                "Sticker placements",
-                "Match barcode on artworks"
-            ],
-            "Final Checks": [
-                "All text checked with AI",
-                "QR Codes scanned with mobile app"
-            ]
-        }
-    }
+def load_css():
+    st.markdown("""
+        <style>
+        .stAlert { padding: 10px; border-radius: 5px; }
+        .pass-badge { background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+        .fail-badge { background-color: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+        .warning-badge { background-color: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+        </style>
+    """, unsafe_allow_html=True)
