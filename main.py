@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import google.generativeai as genai
 from config import Config, load_css
 from file_processor import FileProcessor
 from checklist_manager import ChecklistManager
@@ -17,12 +16,16 @@ if 'validation_results' not in st.session_state:
 
 # Sidebar - Configuration
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/1055/1055644.png", width=50) # Placeholder icon
+    st.image("https://cdn-icons-png.flaticon.com/512/1055/1055644.png", width=50)
     st.title("Artwork Pro")
     
-    api_key = st.text_input("Gemini API Key", type="password")
-    if api_key:
-        genai.configure(api_key=api_key)
+    # Check for API Key in secrets
+    if "OPENAI_API_KEY" in st.secrets:
+        st.success("OpenAI API Key Connected")
+        api_key = st.secrets["OPENAI_API_KEY"]
+    else:
+        st.error("Missing 'OPENAI_API_KEY' in secrets.toml")
+        api_key = None
     
     st.divider()
     
@@ -58,11 +61,10 @@ if uploaded_file and api_key:
         st.subheader("Analysis & Validation")
         
         if st.button("Run Verification"):
-            with st.spinner("Consulting Knowledge Base & Analyzing Visuals..."):
+            with st.spinner("Consulting Knowledge Base & Analyzing Visuals (GPT-4o)..."):
                 
                 # A. Load Context
                 checklist_mgr = ChecklistManager()
-                # Determine path based on selection
                 checklist_path = Config.VIVE_CHECKLIST_PATH if brand_choice == "Vive Health" else Config.CORETECH_CHECKLIST_PATH
                 
                 rules = checklist_mgr.load_checklist(checklist_path, brand_choice)
@@ -70,8 +72,9 @@ if uploaded_file and api_key:
                 
                 # B. AI Analysis
                 analyzer = AIAnalyzer(api_key, Config.MODEL_NAME)
-                # Convert rules to string for AI context
-                checklist_str = "\n".join([r['requirement'] for r in rules[:10]]) # Pass top 10 critical rules
+                checklist_str = "\n".join([r['requirement'] for r in rules[:10]]) 
+                
+                # Pass text context + visual parts
                 ai_results = analyzer.analyze_artwork(img_parts, checklist_str, errors)
                 
                 # C. Logic Validation
@@ -100,4 +103,4 @@ if uploaded_file and api_key:
                     st.write(f"**Observation:** {item['observation']}")
 
 elif not api_key:
-    st.warning("Please enter your Gemini API Key in the sidebar to proceed.")
+    st.warning("Please add your OpenAI API Key to .streamlit/secrets.toml to proceed.")
