@@ -2,105 +2,122 @@ import streamlit as st
 import os
 from config import Config, load_css
 from file_processor import FileProcessor
-from checklist_manager import ChecklistManager
-from validator import ArtworkValidator
 from ai_analyzer import AIAnalyzer
 
 # --- Setup ---
 st.set_page_config(page_title=Config.PAGE_TITLE, page_icon=Config.PAGE_ICON, layout=Config.LAYOUT)
 load_css()
 
-# Initialize Session State
-if 'validation_results' not in st.session_state:
-    st.session_state['validation_results'] = None
+# --- Helper: Common Formulas Database ---
+BASIC_FORMULAS = {
+    "Price Elasticity of Demand": r"E_d = \frac{\% \Delta Q_d}{\% \Delta P}",
+    "GDP (Expenditure Approach)": r"Y = C + I + G + (X - M)",
+    "Profit Maximization": r"MR = MC",
+    "Average Total Cost": r"ATC = \frac{TC}{Q} = AFC + AVC"
+}
 
-# Sidebar - Configuration
+ADVANCED_FORMULAS = {
+    "Cobb-Douglas Utility": r"U(x,y) = x^\alpha y^\beta",
+    "MRS (Marginal Rate of Substitution)": r"MRS_{xy} = \frac{MU_x}{MU_y}",
+    "Solow Steady State": r"s f(k^*) = (n + g + \delta)k^*",
+    "Keynesian Multiplier": r"k = \frac{1}{1 - MPC}"
+}
+
+# --- Sidebar ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/1055/1055644.png", width=50)
-    st.title("Artwork Pro")
+    st.image("https://cdn-icons-png.flaticon.com/512/2666/2666505.png", width=50) # Graph icon
+    st.title("EconWiz Settings")
     
-    # Check for API Key in secrets
+    # API Key
     if "OPENAI_API_KEY" in st.secrets:
-        st.success("OpenAI API Key Connected")
+        # We use the variable name OPENAI_API_KEY for convenience if you have it set, 
+        # but this code uses Google Gemini. Ensure your secrets.toml has the right key or paste it below.
+        st.success("API Key Found")
         api_key = st.secrets["OPENAI_API_KEY"]
     else:
-        st.error("Missing 'OPENAI_API_KEY' in secrets.toml")
-        api_key = None
+        api_key = st.text_input("Enter Google Gemini API Key", type="password")
     
     st.divider()
     
-    brand_choice = st.selectbox("Select Brand Checklist", ["Vive Health", "Coretech"])
+    # Context Settings
+    st.header("📚 Context")
+    level = st.select_slider("Academic Level", options=["High School", "Undergraduate (Intro)", "Undergraduate (Advanced)", "Graduate/PhD"])
+    topic = st.selectbox("Topic", [
+        "Microeconomics: Supply & Demand",
+        "Microeconomics: Consumer Theory",
+        "Microeconomics: Market Structures",
+        "Macroeconomics: GDP & Inflation",
+        "Macroeconomics: Fiscal/Monetary Policy",
+        "Game Theory",
+        "Econometrics",
+        "International Trade"
+    ])
     
     st.divider()
-    st.info("System ready. Upload artwork to begin validation.")
+    
+    # Formula Cheat Sheet in Sidebar
+    st.subheader("🧮 Quick Formulas")
+    formulas = ADVANCED_FORMULAS if "Advanced" in level or "Graduate" in level else BASIC_FORMULAS
+    for name, latex in formulas.items():
+        with st.expander(name):
+            st.latex(latex)
 
 # --- Main Content ---
 st.title(f"{Config.PAGE_ICON} {Config.PAGE_TITLE}")
-st.write("Automated verification against Brand Checklists and Historical Error Tracker.")
+st.write("Upload a screenshot of a graph, a PDF of a problem set, or type your question below.")
 
-# 1. Upload Section
-uploaded_file = st.file_uploader("Upload Artwork (PDF/Image)", type=Config.ALLOWED_EXTENSIONS)
+# 1. Inputs
+col1, col2 = st.columns([1, 1])
 
-if uploaded_file and api_key:
-    col1, col2 = st.columns([1, 1])
+with col1:
+    st.subheader("1. Input Problem")
+    # File Uploader
+    uploaded_file = st.file_uploader("Upload Graph/Homework (Optional)", type=Config.ALLOWED_EXTENSIONS)
     
-    # 2. Processing
-    processor = FileProcessor()
-    text, img_parts, preview_image = processor.process_file(uploaded_file)
+    # Text Input
+    user_query = st.text_area("Type your question here:", height=150, placeholder="Example: Calculate the deadweight loss from a tax of $5 given the supply function Qs = 2P...")
     
-    with col1:
-        st.subheader("Artwork Preview")
-        if preview_image:
-            st.image(preview_image, use_column_width=True)
-        
-        with st.expander("View Extracted Text"):
-            st.text(text[:1000] + "...")
+    run_btn = st.button("🚀 Solve / Explain", type="primary")
 
-    # 3. Validation Logic
-    with col2:
-        st.subheader("Analysis & Validation")
-        
-        if st.button("Run Verification"):
-            with st.spinner("Consulting Knowledge Base & Analyzing Visuals (GPT-4o)..."):
+# 2. Processing & Results
+with col2:
+    st.subheader("2. Solution")
+    
+    if run_btn and api_key and (user_query or uploaded_file):
+        with st.spinner(f"Analyzing {topic} problem..."):
+            
+            # A. Process File (if any)
+            text_from_file = ""
+            img_parts = []
+            preview_img = None
+            
+            if uploaded_file:
+                processor = FileProcessor()
+                # We reuse the existing processor
+                text_from_file, img_parts, preview_img = processor.process_file(uploaded_file)
                 
-                # A. Load Context
-                checklist_mgr = ChecklistManager()
-                checklist_path = Config.VIVE_CHECKLIST_PATH if brand_choice == "Vive Health" else Config.CORETECH_CHECKLIST_PATH
-                
-                rules = checklist_mgr.load_checklist(checklist_path, brand_choice)
-                errors = checklist_mgr.get_common_errors(Config.ERROR_TRACKER_PATH)
-                
-                # B. AI Analysis
-                analyzer = AIAnalyzer(api_key, Config.MODEL_NAME)
-                checklist_str = "\n".join([r['requirement'] for r in rules[:10]]) 
-                
-                # Pass text context + visual parts
-                ai_results = analyzer.analyze_artwork(img_parts, checklist_str, errors)
-                
-                # C. Logic Validation
-                validator = ArtworkValidator(rules, errors)
-                final_report = validator.run_validation(text, uploaded_file.name, ai_results)
-                
-                st.session_state['validation_results'] = final_report
+                # Show preview
+                if preview_img:
+                    st.image(preview_img, caption="Uploaded Problem", width=300)
+            
+            # Combine context
+            full_query = user_query
+            if text_from_file:
+                full_query += f"\n\n[CONTEXT FROM FILE]:\n{text_from_file[:2000]}"
+            
+            # B. Call AI
+            analyzer = AIAnalyzer(api_key, Config.MODEL_NAME)
+            response_text = analyzer.analyze_problem(img_parts, full_query, topic, level)
+            
+            # C. Display Output
+            st.markdown("### Answer")
+            st.markdown(response_text)
+            
+    elif run_btn and not api_key:
+        st.error("Please provide an API Key in the sidebar to proceed.")
+    elif run_btn:
+        st.warning("Please enter a question or upload a file.")
 
-        # 4. Display Results
-        if st.session_state['validation_results']:
-            res = st.session_state['validation_results']
-            
-            # Scorecards
-            s1, s2, s3 = st.columns(3)
-            s1.metric("PASS", res['summary']['pass'])
-            s2.metric("FAIL", res['summary']['fail'])
-            s3.metric("WARNING", res['summary']['warning'])
-            
-            st.divider()
-            
-            # Detailed List
-            for item in res['details']:
-                icon = "✅" if item['status'] == "PASS" else "❌" if item['status'] == "FAIL" else "⚠️"
-                with st.expander(f"{icon} {item['check']} ({item['category']})"):
-                    st.write(f"**Status:** {item['status']}")
-                    st.write(f"**Observation:** {item['observation']}")
-
-elif not api_key:
-    st.warning("Please add your OpenAI API Key to .streamlit/secrets.toml to proceed.")
+# --- Footer ---
+st.divider()
+st.caption("EconWiz uses AI to assist with homework. Always verify calculations manually.")
