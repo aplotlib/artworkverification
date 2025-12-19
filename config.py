@@ -1,42 +1,35 @@
-import os
 import streamlit as st
 
 class Config:
-    PAGE_TITLE = "Artwork Verification Pro"
-    PAGE_ICON = "🎨"
+    PAGE_TITLE = "EconWiz: Homework Assistant"
+    PAGE_ICON = "📈"
     LAYOUT = "wide"
     
     # AI Configuration
-    # Using the Flash model for speed and vision capabilities
+    # Using the Flash model for speed and multimodal (image + text) capabilities
     MODEL_NAME = "gemini-2.0-flash-exp" 
     
     # File Upload Settings
-    ALLOWED_EXTENSIONS = ["pdf", "jpg", "jpeg", "png", "csv"]
+    ALLOWED_EXTENSIONS = ["pdf", "jpg", "jpeg", "png"]
     
     # System Prompts
-    # We inject the "Persona" here to ensure the AI acts like a QC Engineer
+    # Updated Persona for Economics
     SYSTEM_PROMPT = """
-    You are an expert Quality Control Specialist for medical device packaging (Vive Health/Coretech). 
-    Your goal is to catch errors before production. 
+    You are an expert Economics Professor and rigorous homework tutor. 
+    Your goal is to help students understand concepts, solve problems, and interpret graphs.
     
-    CRITICAL RULES:
-    1. ACCURACY: Do not hallucinate text. If you can't read it, say "Unreadable".
-    2. CONTEXT: Compare the visual design against the text content.
-    3. SENSITIVITY: Be highly critical of "Made in China" placement, Barcode readability, and Spelling.
-    4. BRANDING: Ensure fonts and logos match the brand style (Vive vs Coretech).
+    GUIDELINES:
+    1. EXPLAIN YOUR WORK: Don't just give the answer; step through the logic (e.g., "First, we set Qd = Qs...").
+    2. FORMULAS: Use LaTeX formatting for math (e.g., $E_d = \frac{\%\Delta Q}{\%\Delta P}$).
+    3. GRAPHS: If an image is provided, carefully analyze axes, curves (Supply, Demand, MC, MR), and equilibrium points.
+    4. TONE: Supportive, educational, and precise.
+    5. LEVELS: Adjust complexity based on the user's selected level (High School vs. Graduate).
     """
-    
-    # Paths to reference files (assuming they are in the root or a data folder)
-    VIVE_CHECKLIST_PATH = "Artwork Checklist.xlsx - Vive.csv"
-    CORETECH_CHECKLIST_PATH = "Artwork Checklist.xlsx - Coretech.csv"
-    ERROR_TRACKER_PATH = "Artwork Error Tracker (1).xlsx - Sheet1.csv"
 
 def load_css():
     st.markdown("""
         <style>
         .stAlert { padding: 10px; border-radius: 5px; }
-        .pass-badge { background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-        .fail-badge { background-color: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-        .warning-badge { background-color: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+        .formula-box { background-color: #f0f2f6; padding: 15px; border-radius: 8px; border-left: 5px solid #2A9D8F; }
         </style>
     """, unsafe_allow_html=True)
